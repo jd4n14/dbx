@@ -156,3 +156,94 @@ Primero se debe construir el CLI con conexión MySQL y ejecución de `SELECT`. D
 No debo construir un DataGrip para Neovim. Debo construir una herramienta para inspeccionar, comparar y entender estados de backend desde Neovim.
 
 La herramienta debe ser pequeña, rápida, segura y diseñada alrededor de mi flujo real.
+
+## CLI: configuración y `dbx query` (MySQL)
+
+El núcleo CLI ya soporta el primer slice práctico: ejecutar SQL de lectura/inspección contra MySQL y devolver JSON pretty por stdout.
+
+### Ubicación del config
+
+Formato YAML. Se usa el **primer archivo que exista** (sin merge):
+
+1. `--config <path>` (flag)
+2. variable de entorno `DBX_CONFIG`
+3. `./.dbx/config.yaml` (proyecto; `.dbx/` está en `.gitignore`)
+4. `$XDG_CONFIG_HOME/dbx/config.yaml` o, si no hay XDG, `~/.config/dbx/config.yaml`
+
+### Ejemplo de conexión
+
+```yaml
+connections:
+  local_wms:
+    driver: mysql          # por defecto mysql; solo mysql en el MVP
+    host: 127.0.0.1
+    port: 3306             # opcional; default 3306
+    user: root
+    # password: "secret"   # inline (opcional si usas password_env)
+    password_env: MYSQL_PASSWORD  # preferible: no commitear secretos
+    database: wms
+    env: dev               # opcional: dev | staging | prod | readonly
+    # Alternativa power-user (credenciales embebidas en el DSN):
+    # dsn: "user:pass@tcp(127.0.0.1:3306)/wms"
+```
+
+**`password_env` (resumen):** si `password_env` está definido, la variable de entorno **debe** existir y ser no vacía; se usa ese valor e **ignora** `password` inline. Si la env falta o está vacía → error (sin fallback silencioso a `password`). Si omites `password_env`, se usa `password` inline (puede estar vacío). Con `dsn` raw, los campos de password no se usan para auth.
+
+### Uso
+
+```bash
+# SQL por stdin; JSON pretty solo en stdout si todo sale bien
+echo 'select 1 as id, "{\"a\":1}" as metadata' | dbx query --conn local_wms
+
+# Config explícito
+echo 'show tables' | dbx query --conn local_wms --config /path/to/config.yaml
+
+# Fallos: exit ≠ 0, mensaje en stderr (`error: …`), sin JSON parcial en stdout
+echo 'delete from orders' | dbx query --conn local_wms
+```
+
+Flags:
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--conn` | sí | Nombre de la conexión en el YAML |
+| `--config` | no | Ruta al config (si no, orden de descubrimiento arriba) |
+
+### Política de SQL (MVP)
+
+Solo se permiten statements de **lectura/inspección**. La allowlist es la **barrera de escritura** (`QueryContext` **no** impide DML por sí solo):
+
+- Permitidos: `SELECT`, `WITH` (solo CTE de lectura), `SHOW`, `DESCRIBE`/`DESC`, `EXPLAIN`
+- Rechazados: `INSERT`/`UPDATE`/`DELETE`/`DROP`/… y CTE+DML (`WITH … DELETE/UPDATE/INSERT`)
+- Un solo statement; un `;` final opcional. Multi-statement se rechaza.
+- DSN final siempre fuerza `multiStatements=false` (también si el DSN raw lo pedía en `true`).
+
+### Notas de salida JSON
+
+- Siempre pretty-print (indent 2 espacios + newline final). No hay modo compacto en el MVP.
+- Columnas con JSON **objeto o array** válido se anidan automáticamente; primitivos JSON (`true`, `123`) quedan como string.
+- **DECIMAL de MySQL se serializa como string JSON** (p. ej. `"12.34"`), no como número, para no perder precisión. Puede diferir de ejemplos numéricos genéricos del README (`"id": 123` sigue siendo número cuando el driver devuelve entero).
+- `time.Time` → RFC3339 en UTC (`…Z` cuando aplica).
+- Resultado vacío → `[]`.
+
+### Limitaciones conocidas (MVP)
+
+- Detección multi-statement **naive**: un `;` dentro de literales/strings puede dar **falso positivo** y rechazar el query (fail-closed a propósito).
+- La allowlist es heurística (no un parser SQL completo). Aún pueden pasar formas con side effects que empiezan por `SELECT` (p. ej. `SELECT … INTO OUTFILE`, `SELECT … FOR UPDATE`, `SELECT … INTO @var`).
+- Result sets **sin límite de filas** en el MVP: queries enormes pueden consumir mucha memoria/tiempo.
+- Tipos MySQL raros (BIT, GEOMETRY, etc.) se mapean de forma conservadora; binario no-UTF-8 → base64.
+- Sin multi-statement, sin PostgreSQL, sin Neovim en este slice.
+
+### Tests de integración opcionales
+
+```bash
+# Offline (default; no requiere MySQL):
+go test ./...
+go build -o /tmp/dbx ./cmd/dbx
+
+# Live MySQL (opcional): exporta un DSN y corre el paquete query
+export DBX_MYSQL_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/dbname'
+go test ./internal/query/ -count=1 -v -run Integration
+```
+
+Si `DBX_MYSQL_TEST_DSN` no está definido, el test de integración se **salta** (no falla el suite offline).
