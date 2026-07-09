@@ -241,9 +241,48 @@ Solo se permiten statements de **lectura/inspección**. La allowlist es la **bar
 go test ./...
 go build -o /tmp/dbx ./cmd/dbx
 
-# Live MySQL (opcional): exporta un DSN y corre el paquete query
+# Live MySQL (opcional): exporta un DSN y corre los paquetes query / ddl
 export DBX_MYSQL_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/dbname'
 go test ./internal/query/ -count=1 -v -run Integration
+go test ./internal/ddl/ -count=1 -v -run Integration
 ```
 
 Si `DBX_MYSQL_TEST_DSN` no está definido, el test de integración se **salta** (no falla el suite offline).
+
+## CLI: `dbx ddl` (MySQL)
+
+Obtiene el DDL de una tabla con `SHOW CREATE TABLE`.
+
+### Uso
+
+```bash
+dbx ddl --conn local_wms --table orders
+dbx ddl --conn local_wms --table orders --json
+dbx ddl --conn local_wms --table orders --config /path/to/config.yaml
+```
+
+### Flags
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--conn` | sí | Conexión nombrada en el YAML |
+| `--table` | sí | Nombre simple de tabla (sin `schema.table`) |
+| `--config` | no | Ruta al config (mismo discovery que `query`) |
+| `--json` | no | Envelope JSON en lugar de SQL puro |
+
+### Salida
+
+- Default: texto SQL (`CREATE TABLE …`) + newline final en stdout.
+- `--json`: objeto pretty con `type`, `connection`, `dialect`, `table`, `ddl`.
+- Fallos: exit ≠ 0, `error: …` en stderr, sin salida parcial en stdout.
+
+### Reglas de `--table`
+
+Solo identificador ASCII: letra o `_` inicial, luego letras/dígitos/`_`, máximo 64 caracteres. Se valida y se entrecomilla con backticks antes de ejecutar; no se acepta SQL libre.
+
+### Limitaciones (MVP)
+
+- Solo `TABLE` (no VIEW).
+- Solo MySQL.
+- Sin nombres calificados `db.table`.
+- El texto es el de MySQL tal cual (puede incluir `AUTO_INCREMENT=N` actual).
