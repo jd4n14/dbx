@@ -22,3 +22,6 @@ vendor/
 .env
 .env.*
 *.pem
+
+# Agent / task artifacts
+.ai/
