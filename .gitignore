@@ -1,0 +1,24 @@
+# Binaries
+/dbx
+/bin/
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+
+# Project runtime
+.dbx/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+*.pem
