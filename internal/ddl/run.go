@@ -14,14 +14,13 @@ import (
 const DefaultTimeout = 30 * time.Second
 
 // FetchConnection validates the table name before Open, then fetches DDL.
+// Open uses the caller's context (CLI supplies connect budget); Fetch applies
+// DefaultTimeout so dial/ping is not starved by the query deadline alone.
 func FetchConnection(ctx context.Context, conn config.Connection, table string) (string, error) {
 	table = strings.TrimSpace(table)
 	if err := ValidateTableName(table); err != nil {
 		return "", err
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
-	defer cancel()
 
 	database, err := mysql.Open(ctx, conn)
 	if err != nil {
@@ -29,5 +28,8 @@ func FetchConnection(ctx context.Context, conn config.Connection, table string) 
 	}
 	defer database.Close()
 
-	return Fetch(ctx, database, table)
+	fetchCtx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+
+	return Fetch(fetchCtx, database, table)
 }
