@@ -264,11 +264,16 @@ func TestRunQuery_RunnerErrorNoStdout(t *testing.T) {
 
 func TestRun_StubsAndVersion(t *testing.T) {
 	// Other commands remain stubs.
-	for _, cmd := range []string{"ddl", "snapshot", "diff", "path", "danger"} {
+	for _, cmd := range []string{"snapshot", "diff", "path", "danger"} {
 		err := run([]string{cmd})
 		if err == nil || !strings.Contains(err.Error(), "not implemented") {
 			t.Fatalf("command %q: want not implemented, got %v", cmd, err)
 		}
+	}
+
+	// ddl is implemented: missing --conn
+	if err := run([]string{"ddl"}); err == nil || !strings.Contains(err.Error(), "--conn") {
+		t.Fatalf("ddl without flags: got %v", err)
 	}
 
 	// version succeeds (prints to real stdout during test — acceptable).

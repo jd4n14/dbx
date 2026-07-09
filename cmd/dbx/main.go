@@ -21,7 +21,9 @@ func run(args []string) error {
 	switch args[0] {
 	case "query":
 		return runQuery(args[1:])
-	case "ddl", "snapshot", "diff", "path", "danger":
+	case "ddl":
+		return runDDL(args[1:])
+	case "snapshot", "diff", "path", "danger":
 		fmt.Fprintf(os.Stderr, "command %q is not implemented yet\n", args[0])
 		return fmt.Errorf("not implemented")
 	case "version", "--version", "-v":
