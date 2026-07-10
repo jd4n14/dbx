@@ -8,6 +8,7 @@
 
 ## Status
 
+- **Implementation**: DONE (2026-07-10)
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: MED — CLI process I/O and buffer lifecycle need an explicit,
@@ -154,13 +155,13 @@ dbx configuration. Include an end-to-end example: select query → `:DbRun` →
 
 ## Done criteria
 
-- [ ] The five requested Neovim commands plus `:DbDanger` are registered.
-- [ ] `DbRun`, `DbDDL`, `DbPath`, and `DbDanger` render output in correctly
+- [x] The five requested Neovim commands plus `:DbDanger` are registered.
+- [x] `DbRun`, `DbDDL`, `DbPath`, and `DbDanger` render output in correctly
   typed scratch splits; `DbSnapshot` uses `--from-last`; `DbDiff` uses diff.
-- [ ] Process failures show stderr through notification and do not alter source
+- [x] Process failures show stderr through notification and do not alter source
   buffers.
-- [ ] The headless Lua smoke test and all Go verification commands pass.
-- [ ] README provides configuration and end-to-end usage; Plan 005 is DONE.
+- [x] The headless Lua smoke test and all Go verification commands pass.
+- [x] README provides configuration and end-to-end usage; Plan 005 is DONE.
 
 ## STOP conditions
 

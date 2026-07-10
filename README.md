@@ -163,6 +163,40 @@ No debo construir un DataGrip para Neovim. Debo construir una herramienta para i
 
 La herramienta debe ser pequeña, rápida, segura y diseñada alrededor de mi flujo real.
 
+## Cliente mínimo para Neovim
+
+El plugin requiere Neovim 0.10 o posterior y usa `vim.system`; Lua funciona
+solamente como adaptador del CLI. Instala este repositorio en el `runtimepath`
+de Neovim (con tu gestor de plugins o añadiendo su ruta directamente) y asegúrate
+de que el ejecutable `dbx` esté en `PATH`. Después configura una conexión que ya
+exista en el YAML de dbx:
+
+```lua
+require("dbx").setup({ executable = "dbx", connection = "local_wms" })
+```
+
+Las credenciales permanecen en la configuración de dbx; el plugin no las copia
+ni las conserva en Lua. Los comandos disponibles son:
+
+- `:DbRun [connection]`: ejecuta la selección/rango visual o, sin rango, todo
+  el buffer. El argumento opcional sustituye la conexión solo para esa llamada.
+- `:DbDDL [table]`: muestra SQL para la tabla indicada o para la palabra bajo el
+  cursor.
+- `:DbSnapshot <name>`: guarda el último resultado mediante
+  `dbx snapshot --from-last` y notifica la ruta creada.
+- `:DbDiff <before> <after>`: abre el diff estructurado en un buffer `diff`.
+- `:DbPath [snapshot] <path>`: filtra el último resultado o el snapshot indicado
+  y abre la respuesta en un buffer `json`.
+- `:DbDanger`: analiza la selección/rango visual o todo el buffer y abre el
+  envelope consultivo en un buffer `json`; nunca se ejecuta automáticamente.
+
+Las salidas se abren en splits scratch y nunca reemplazan el buffer SQL fuente.
+Un flujo completo puede hacerse así: selecciona el query y ejecuta `:DbRun`,
+guarda `:DbSnapshot before`, realiza el cambio en la aplicación, repite
+`:DbRun`, guarda `:DbSnapshot after`, compara con `:DbDiff before after` y
+consulta el estado anterior con
+`:DbPath before metadata.fulfillment.status`.
+
 ## CLI: configuración y `dbx query` (MySQL)
 
 El núcleo CLI ya soporta el primer slice práctico: ejecutar SQL de lectura/inspección contra MySQL y devolver JSON pretty por stdout.
