@@ -312,7 +312,7 @@ func TestRunQuery_RunnerErrorNoStdout(t *testing.T) {
 
 func TestRun_StubsAndVersion(t *testing.T) {
 	// Remaining stubs.
-	for _, cmd := range []string{"diff", "path", "danger"} {
+	for _, cmd := range []string{"path", "danger"} {
 		err := run([]string{cmd})
 		if err == nil || !strings.Contains(err.Error(), "not implemented") {
 			t.Fatalf("command %q: want not implemented, got %v", cmd, err)

@@ -371,7 +371,57 @@ Identificador seguro para archivo: letra o `_` inicial, luego letras/dígitos/`_
 ```
 
 - `connection` / `sql`: de last result o de `--conn`; con pipe puro de JSON suelen quedar vacíos (salvo `--conn`).
-- Futuros `diff` / `path` operan sobre **`data`**, no sobre el envelope completo.
+- `diff` opera sobre **`data`**, no sobre el envelope completo; por tanto no
+  reporta cambios de metadata como `created_at`, SQL o conexión.
+
+## CLI: `dbx diff`
+
+Compara dos snapshots de forma estructural, sin depender del formato ni del
+orden de las claves de sus objetos JSON. Solo compara el campo `data` de cada
+snapshot validado.
+
+```bash
+dbx diff before_split_order after_split_order
+dbx diff --dir /tmp/dbx-snapshots before_split_order after_split_order
+dbx diff --json before_split_order after_split_order
+```
+
+La salida por defecto enumera cada cambio por path. Por ejemplo:
+
+```diff
+$.rows[0].status
+- "created"
++ "pending"
+
+$.rows[0].metadata.fulfillment.status
+- null
++ "created"
+```
+
+Si los documentos son equivalentes, imprime exactamente `no differences` y
+termina con éxito. Con `--json` imprime un envelope JSON pretty con
+`type: "diff"`, los valores `before` / `after` originales y la lista ordenada
+de cambios (`path`, `kind`, `before`, `after`). Los valores JSON se mantienen
+como JSON: no se codifican como strings dentro del envelope.
+
+```bash
+dbx diff [--dir <path>] [--json] <before> <after>
+```
+
+| Flag | Descripción |
+|------|-------------|
+| `--dir` | Directorio de snapshots (default: `./.dbx/snapshots`) |
+| `--json` | Emite el diff estructurado como JSON pretty |
+
+### Semántica y limitación de arrays
+
+- Objetos: se comparan por unión ordenada de claves; el orden de las claves no
+  genera diferencias.
+- Arrays: se comparan **por posición** (`[0]`, `[1]`, …). Un reordenamiento se
+  verá como cambios en esas posiciones; el MVP no infiere identidad de filas ni
+  detecta movimientos.
+- Cambios: `added`, `removed` o `changed`. Los nombres de snapshot se validan
+  antes de leer archivos y los errores no escriben salida parcial en stdout.
 
 ### Last result (`dbx query`)
 
@@ -390,7 +440,7 @@ El stdout de `query` **no cambia**: sigue siendo solo el array pretty de filas.
 
 ### Limitaciones (MVP)
 
-- Sin `diff` / `path` aún (stubs).
+- Sin `path` aún (stub).
 - Sin límite de tamaño (igual que query).
 - Directorio = cwd del proceso (corre desde la raíz del proyecto).
 - SQL y datos en last/snapshot pueden contener información sensible; se guardan solo localmente, gitignored y con permisos privados del propietario por defecto.

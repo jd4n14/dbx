@@ -25,7 +25,9 @@ func run(args []string) error {
 		return runDDL(args[1:])
 	case "snapshot":
 		return runSnapshot(args[1:])
-	case "diff", "path", "danger":
+	case "diff":
+		return runDiff(args[1:])
+	case "path", "danger":
 		fmt.Fprintf(os.Stderr, "command %q is not implemented yet\n", args[0])
 		return fmt.Errorf("not implemented")
 	case "version", "--version", "-v":
