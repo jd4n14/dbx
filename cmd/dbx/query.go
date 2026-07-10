@@ -11,6 +11,7 @@ import (
 
 	"github.com/jd4n14/dbx/internal/config"
 	"github.com/jd4n14/dbx/internal/query"
+	"github.com/jd4n14/dbx/internal/snapshot"
 )
 
 // connectBudget is added to the query timeout so dial/ping can finish
@@ -22,7 +23,7 @@ const connectBudget = 15 * time.Second
 type runConnectionFunc func(ctx context.Context, conn config.Connection, sqlText string) ([]byte, error)
 
 func runQuery(args []string) error {
-	return runQueryCmd(args, os.Stdin, os.Stdout, os.Stderr, query.RunConnection)
+	return runQueryCmd(args, os.Stdin, os.Stdout, os.Stderr, query.RunConnection, "")
 }
 
 // runQueryCmd implements `dbx query`:
@@ -30,9 +31,12 @@ func runQuery(args []string) error {
 //	--conn   required named connection
 //	--config optional config path (else discovery / DBX_CONFIG)
 //
-// SQL is read fully from stdin. On success, pretty JSON is written only to
-// stdout. Policy runs inside runConn before any Open (see query.RunConnection).
-func runQueryCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, runConn runConnectionFunc) error {
+// SQL is read fully from stdin. On success, the result is cached as
+// .dbx/last.json under cwd, then pretty JSON rows are written only to stdout.
+// Policy runs inside runConn before any Open (see query.RunConnection).
+//
+// cwd is the project root for last-result storage; empty uses os.Getwd().
+func runQueryCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, runConn runConnectionFunc, cwd string) error {
 	fs := flag.NewFlagSet("query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -72,8 +76,24 @@ func runQueryCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, runCo
 	ctx, cancel := context.WithTimeout(context.Background(), query.DefaultQueryTimeout+connectBudget)
 	defer cancel()
 
+	if runConn == nil {
+		runConn = query.RunConnection
+	}
+
 	out, err := runConn(ctx, conn, sqlText)
 	if err != nil {
+		return err
+	}
+
+	if cwd == "" {
+		cwd, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve working directory: %w", err)
+		}
+	}
+
+	// Cache last result before stdout so failures leave stdout empty.
+	if err := snapshot.WriteLastFromQueryData(cwd, strings.TrimSpace(*connName), sqlText, out); err != nil {
 		return err
 	}
 

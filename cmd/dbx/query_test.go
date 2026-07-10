@@ -37,7 +37,7 @@ func writeTempConfig(t *testing.T, content string) string {
 
 func TestRunQuery_MissingConn(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runQueryCmd(nil, strings.NewReader("SELECT 1"), &stdout, &stderr, nil)
+	err := runQueryCmd(nil, strings.NewReader("SELECT 1"), &stdout, &stderr, nil, t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for missing --conn")
 	}
@@ -51,7 +51,7 @@ func TestRunQuery_MissingConn(t *testing.T) {
 
 func TestRunQuery_EmptyConnFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runQueryCmd([]string{"--conn", ""}, strings.NewReader("SELECT 1"), &stdout, &stderr, nil)
+	err := runQueryCmd([]string{"--conn", ""}, strings.NewReader("SELECT 1"), &stdout, &stderr, nil, t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for empty --conn")
 	}
@@ -72,6 +72,7 @@ func TestRunQuery_EmptyStdin(t *testing.T) {
 		strings.NewReader(""),
 		&stdout, &stderr,
 		query.RunConnection,
+		t.TempDir(),
 	)
 	if err == nil {
 		t.Fatal("expected error for empty stdin")
@@ -90,6 +91,7 @@ func TestRunQuery_WhitespaceOnlyStdin(t *testing.T) {
 		strings.NewReader("   \n\t  "),
 		&stdout, &stderr,
 		query.RunConnection,
+		t.TempDir(),
 	)
 	if err == nil {
 		t.Fatal("expected error for whitespace-only stdin")
@@ -134,6 +136,7 @@ func TestRunQuery_PolicyDenyOffline(t *testing.T) {
 					}
 					return out, e
 				},
+				t.TempDir(),
 			)
 			if err == nil {
 				t.Fatal("expected policy denial error")
@@ -167,6 +170,7 @@ func TestRunQuery_ConfigMissing(t *testing.T) {
 		strings.NewReader("SELECT 1"),
 		&stdout, &stderr,
 		nil, // must not be called
+		t.TempDir(),
 	)
 	if err == nil {
 		t.Fatal("expected missing config error")
@@ -188,6 +192,7 @@ func TestRunQuery_UnknownConnection(t *testing.T) {
 		strings.NewReader("SELECT 1"),
 		&stdout, &stderr,
 		nil,
+		t.TempDir(),
 	)
 	if err == nil {
 		t.Fatal("expected unknown connection error")
@@ -203,6 +208,7 @@ func TestRunQuery_UnknownConnection(t *testing.T) {
 func TestRunQuery_StdoutPurityOnSuccess(t *testing.T) {
 	cfgPath := writeTempConfig(t, testConnYAML)
 	wantJSON := []byte("[\n  {\n    \"n\": 1\n  }\n]\n")
+	cwd := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
 	var gotSQL string
@@ -220,6 +226,7 @@ func TestRunQuery_StdoutPurityOnSuccess(t *testing.T) {
 			}
 			return wantJSON, nil
 		},
+		cwd,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -236,6 +243,46 @@ func TestRunQuery_StdoutPurityOnSuccess(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr must be empty on success, got %q", stderr.String())
 	}
+
+	// Last result cache must exist and carry connection + sql + data.
+	lastPath := filepath.Join(cwd, ".dbx", "last.json")
+	raw, err := os.ReadFile(lastPath)
+	if err != nil {
+		t.Fatalf("last.json: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"type": "last_result"`)) {
+		t.Fatalf("last envelope: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"connection": "local"`)) {
+		t.Fatalf("last connection: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`SELECT 1 AS n`)) {
+		t.Fatalf("last sql: %s", raw)
+	}
+}
+
+func TestRunQuery_CachePreservesLargeInteger(t *testing.T) {
+	cfgPath := writeTempConfig(t, testConnYAML)
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	result := []byte(`[{"id":9007199254740993}]`)
+	err := runQueryCmd(
+		[]string{"--conn", "local", "--config", cfgPath},
+		strings.NewReader("SELECT id FROM orders"),
+		&stdout, &stderr,
+		func(context.Context, config.Connection, string) ([]byte, error) { return result, nil },
+		cwd,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(cwd, ".dbx", "last.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte("9007199254740993")) {
+		t.Fatalf("large integer changed in cache: %s", raw)
+	}
 }
 
 func TestRunQuery_RunnerErrorNoStdout(t *testing.T) {
@@ -249,6 +296,7 @@ func TestRunQuery_RunnerErrorNoStdout(t *testing.T) {
 		func(ctx context.Context, conn config.Connection, sqlText string) ([]byte, error) {
 			return []byte("partial"), errors.New("boom")
 		},
+		t.TempDir(),
 	)
 	if err == nil {
 		t.Fatal("expected error")
@@ -263,12 +311,17 @@ func TestRunQuery_RunnerErrorNoStdout(t *testing.T) {
 }
 
 func TestRun_StubsAndVersion(t *testing.T) {
-	// Other commands remain stubs.
-	for _, cmd := range []string{"snapshot", "diff", "path", "danger"} {
+	// Remaining stubs.
+	for _, cmd := range []string{"diff", "path", "danger"} {
 		err := run([]string{cmd})
 		if err == nil || !strings.Contains(err.Error(), "not implemented") {
 			t.Fatalf("command %q: want not implemented, got %v", cmd, err)
 		}
+	}
+
+	// snapshot is implemented: missing --name
+	if err := run([]string{"snapshot"}); err == nil || !strings.Contains(err.Error(), "--name") {
+		t.Fatalf("snapshot without flags: got %v", err)
 	}
 
 	// ddl is implemented: missing --conn
@@ -306,6 +359,7 @@ func TestRunQuery_InvalidFlag(t *testing.T) {
 		strings.NewReader("SELECT 1"),
 		&stdout, &stderr,
 		nil,
+		t.TempDir(),
 	)
 	if err == nil {
 		t.Fatal("expected flag parse error")

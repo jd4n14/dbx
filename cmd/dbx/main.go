@@ -23,7 +23,9 @@ func run(args []string) error {
 		return runQuery(args[1:])
 	case "ddl":
 		return runDDL(args[1:])
-	case "snapshot", "diff", "path", "danger":
+	case "snapshot":
+		return runSnapshot(args[1:])
+	case "diff", "path", "danger":
 		fmt.Fprintf(os.Stderr, "command %q is not implemented yet\n", args[0])
 		return fmt.Errorf("not implemented")
 	case "version", "--version", "-v":
@@ -58,6 +60,8 @@ Examples:
   dbx query --conn local_wms < query.sql
   dbx ddl --conn local_wms --table orders
   dbx snapshot --name before_split_order
+  dbx snapshot list
+  dbx snapshot show before_split_order
   dbx diff before_split_order after_split_order
   dbx path --snapshot before_split_order 'metadata.fulfillment.status'
   dbx danger < query.sql

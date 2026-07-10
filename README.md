@@ -286,3 +286,112 @@ Solo identificador ASCII: letra o `_` inicial, luego letras/dígitos/`_`, máxim
 - Solo MySQL.
 - Sin nombres calificados `db.table`.
 - El texto es el de MySQL tal cual (puede incluir `AUTO_INCREMENT=N` actual).
+
+## CLI: `dbx snapshot`
+
+Guarda resultados JSON como **snapshots** con nombre humano (evidencia before/after). Por proyecto, bajo `.dbx/snapshots/` (cwd del proceso). `.dbx/` ya está en `.gitignore`.
+
+El almacenamiento local por defecto es privado del propietario: `.dbx/` y
+`.dbx/snapshots/` usan modo `0700`, y `last.json` / cada snapshot usan `0600`.
+Contienen SQL y datos potencialmente sensibles; no los compartas ni los agregues
+al repositorio. Un directorio pasado con `--dir` conserva los permisos de su
+directorio padre, aunque el archivo nuevo se escribe con `0600`.
+
+### Flujo típico
+
+```bash
+# Query → JSON en stdout + cache en .dbx/last.json
+echo 'select id, status from orders where id = 1' | dbx query --conn local_wms
+
+# Snapshot desde last result (sin re-pipe)
+dbx snapshot --name before_split_order
+
+# Fuerza el uso del último resultado cacheado. Rechaza stdin no vacío para
+# evitar guardar una fuente ambigua.
+dbx snapshot --name before_split_order --from-last
+
+# O en un solo pipe (stdin del snapshot = JSON del query)
+echo 'select id, status from orders where id = 1' \
+  | dbx query --conn local_wms \
+  | dbx snapshot --name before_split_order --conn local_wms
+
+dbx snapshot list
+dbx snapshot show before_split_order
+dbx snapshot show --data before_split_order   # solo el array de filas
+```
+
+### Comandos
+
+```bash
+dbx snapshot --name <name> [--conn <name>] [--force] [--from-last] [--dir <path>]
+dbx snapshot list [--dir <path>]
+dbx snapshot show [--dir <path>] [--data] <name>
+```
+
+| Comando | Descripción |
+|---------|-------------|
+| **save** (default) | Guarda un envelope en `.dbx/snapshots/<name>.json` |
+| **list** | Lista nombres y `created_at` (tab-separated) |
+| **show** | Imprime el envelope pretty; `--data` solo el campo `data` |
+
+### Save: origen del JSON
+
+1. Si stdin **no** es un TTY (pipe/redirect) → se lee JSON de stdin.
+2. Si stdin es TTY → se usa `.dbx/last.json` (escrito por el último `dbx query` exitoso).
+
+Con `--from-last` siempre se usa `.dbx/last.json`, incluso con stdin redirigido.
+Para evitar ambigüedad, el comando falla si ese stdin contiene bytes distintos de
+espacios JSON; stdin interactivo no se lee ni bloquea el comando.
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--name` | sí (save) | Nombre del snapshot |
+| `--conn` | no | Metadata de conexión (override sobre last result) |
+| `--force` | no | Sobrescribe si ya existe |
+| `--from-last` | no | Fuerza el cache del último `query`; rechaza stdin no vacío |
+| `--dir` | no | Directorio de snapshots (default: `./.dbx/snapshots`) |
+
+### Nombre
+
+Identificador seguro para archivo: letra o `_` inicial, luego letras/dígitos/`_`/`-`, máximo 64. Sin path separators.
+
+### Envelope on-disk
+
+```json
+{
+  "type": "snapshot",
+  "name": "before_split_order",
+  "created_at": "2026-07-08T17:20:31Z",
+  "connection": "local_wms",
+  "sql": "select id, status from orders where id = 1",
+  "data": [
+    { "id": 1, "status": "pending" }
+  ]
+}
+```
+
+- `connection` / `sql`: de last result o de `--conn`; con pipe puro de JSON suelen quedar vacíos (salvo `--conn`).
+- Futuros `diff` / `path` operan sobre **`data`**, no sobre el envelope completo.
+
+### Last result (`dbx query`)
+
+Tras un `query` exitoso, **antes** de escribir stdout, se guarda:
+
+`.dbx/last.json` → envelope `type: "last_result"` con `connection`, `sql`, `data`.
+
+El stdout de `query` **no cambia**: sigue siendo solo el array pretty de filas.
+
+### Salida
+
+- **save** éxito: path del archivo en stdout + newline; exit 0.
+- **list** / **show**: texto o JSON en stdout.
+- Fallos: exit ≠ 0, `error: …` en stderr, sin archivo parcial (write atómico).
+- Existe → error salvo `--force`.
+
+### Limitaciones (MVP)
+
+- Sin `diff` / `path` aún (stubs).
+- Sin límite de tamaño (igual que query).
+- Directorio = cwd del proceso (corre desde la raíz del proyecto).
+- SQL y datos en last/snapshot pueden contener información sensible; se guardan solo localmente, gitignored y con permisos privados del propietario por defecto.
+- Flags de `show` van **antes** del nombre: `dbx snapshot show --data before_split_order`.
