@@ -8,6 +8,7 @@
 
 ## Status
 
+- **Implementation**: DONE (2026-07-10)
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: HIGH — SQL safety logic is security-sensitive; conservative false
@@ -136,11 +137,11 @@ prod/readonly escalation, missing config, and stdout purity.
 
 ## Done criteria
 
-- [ ] `dbx danger` returns a documented JSON envelope and never contacts MySQL.
-- [ ] All minimum dangerous forms have deterministic finding codes.
-- [ ] Production/readonly context escalates non-read statements to critical.
-- [ ] `dbx query` remains read-only and passes all pre-existing policy tests.
-- [ ] `go test ./... -count=1` and `go vet ./...` pass; README and index update.
+- [x] `dbx danger` returns a documented JSON envelope and never contacts MySQL.
+- [x] All minimum dangerous forms have deterministic finding codes.
+- [x] Production/readonly context escalates non-read statements to critical.
+- [x] `dbx query` remains read-only and passes all pre-existing policy tests.
+- [x] `go test ./... -count=1` and `go vet ./...` pass; README and index update.
 
 ## STOP conditions
 

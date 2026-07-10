@@ -25,6 +25,8 @@ func TestValidateQuery_Allow(t *testing.T) {
 		{"describe", "DESCRIBE t"},
 		{"explain", "EXPLAIN SELECT 1"},
 		{"explain_update", "EXPLAIN UPDATE t SET x=1"},
+		{"quoted_keyword", "SELECT 'DELETE', \"UPDATE\", `DROP` FROM t"},
+		{"commented_keyword", "SELECT 1 /* DELETE FROM t */"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

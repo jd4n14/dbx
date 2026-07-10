@@ -26,30 +26,31 @@ package query
 import (
 	"fmt"
 	"strings"
-	"unicode"
+
+	"github.com/jd4n14/dbx/internal/sqllex"
 )
 
 // Deny keywords for WITH secondary scan and for error messaging on bare DML.
 // Case-insensitive whole-word tokens at paren depth 0 (after comment strip).
 var withDenyKeywords = map[string]struct{}{
-	"INSERT":  {},
-	"UPDATE":  {},
-	"DELETE":  {},
-	"REPLACE": {},
-	"LOAD":    {},
-	"CALL":    {},
-	"DROP":    {},
+	"INSERT":   {},
+	"UPDATE":   {},
+	"DELETE":   {},
+	"REPLACE":  {},
+	"LOAD":     {},
+	"CALL":     {},
+	"DROP":     {},
 	"TRUNCATE": {},
-	"ALTER":   {},
-	"CREATE":  {},
-	"RENAME":  {},
-	"GRANT":   {},
-	"REVOKE":  {},
-	"SET":     {},
-	"LOCK":    {},
-	"UNLOCK":  {},
-	"HANDLER": {},
-	"DO":      {},
+	"ALTER":    {},
+	"CREATE":   {},
+	"RENAME":   {},
+	"GRANT":    {},
+	"REVOKE":   {},
+	"SET":      {},
+	"LOCK":     {},
+	"UNLOCK":   {},
+	"HANDLER":  {},
+	"DO":       {},
 }
 
 var allowedFirstKeywords = map[string]struct{}{
@@ -65,34 +66,15 @@ var allowedFirstKeywords = map[string]struct{}{
 //
 // This function is the write barrier. Call it before Open/QueryContext.
 func ValidateQuery(sql string) error {
-	s := stripLeadingTrivia(sql)
-	if s == "" {
+	scan := sqllex.Lex(sql)
+	if !scan.HasContent || len(scan.Tokens) == 0 {
 		return fmt.Errorf("query is empty")
 	}
 
-	if err := rejectMultiStatement(s); err != nil {
+	if err := rejectMultiStatement(sql); err != nil {
 		return err
 	}
-
-	// Normalize for keyword analysis: drop a single trailing semicolon.
-	body := strings.TrimSpace(s)
-	if strings.HasSuffix(body, ";") {
-		body = strings.TrimSpace(body[:len(body)-1])
-	}
-	if body == "" {
-		return fmt.Errorf("query is empty")
-	}
-
-	// Strip comments for keyword/token analysis (fail-closed multi-statement
-	// check above used the raw leading-stripped text so ';' in comments still
-	// reject — acceptable MVP limitation).
-	scanBody := stripSQLComments(body)
-	scanBody = strings.TrimSpace(scanBody)
-	if scanBody == "" {
-		return fmt.Errorf("query is empty")
-	}
-
-	kw := firstKeyword(scanBody)
+	kw := scan.Tokens[0].Word
 	if kw == "" {
 		return fmt.Errorf("query only allows read/inspect statements (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN); refused: (unrecognized)")
 	}
@@ -102,7 +84,7 @@ func ValidateQuery(sql string) error {
 	}
 
 	if kw == "WITH" {
-		if denied := findTopLevelDenyKeyword(scanBody); denied != "" {
+		if denied := findTopLevelDenyKeyword(scan.Tokens); denied != "" {
 			return fmt.Errorf("query only allows read/inspect statements (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN); refused: WITH ... %s", denied)
 		}
 	}
@@ -124,169 +106,15 @@ func rejectMultiStatement(s string) error {
 	return nil
 }
 
-// stripLeadingTrivia removes leading whitespace and simple leading -- / /* */ comments.
-func stripLeadingTrivia(s string) string {
-	for {
-		s = strings.TrimLeftFunc(s, unicode.IsSpace)
-		if s == "" {
-			return s
-		}
-		if strings.HasPrefix(s, "--") {
-			// Line comment through newline.
-			if i := strings.IndexByte(s, '\n'); i >= 0 {
-				s = s[i+1:]
-				continue
-			}
-			return ""
-		}
-		if strings.HasPrefix(s, "/*") {
-			if i := strings.Index(s, "*/"); i >= 0 {
-				s = s[i+2:]
-				continue
-			}
-			// Unclosed block comment — fail-closed empty.
-			return ""
-		}
-		return s
-	}
-}
-
-// stripSQLComments removes -- line and /* */ block comments for keyword scans.
-// Not a full lexer; string literals are not preserved (MVP fail-closed OK).
-func stripSQLComments(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	i := 0
-	for i < len(s) {
-		if i+1 < len(s) && s[i] == '-' && s[i+1] == '-' {
-			// Line comment.
-			for i < len(s) && s[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		if i+1 < len(s) && s[i] == '/' && s[i+1] == '*' {
-			end := strings.Index(s[i+2:], "*/")
-			if end < 0 {
-				break
-			}
-			i = i + 2 + end + 2
-			continue
-		}
-		// Minimal string skip so keywords inside quotes are less likely to trip
-		// WITH secondary scan (still not a full SQL lexer).
-		if s[i] == '\'' || s[i] == '"' || s[i] == '`' {
-			quote := s[i]
-			b.WriteByte(quote)
-			i++
-			for i < len(s) {
-				c := s[i]
-				b.WriteByte(c)
-				i++
-				if c == '\\' && i < len(s) {
-					b.WriteByte(s[i])
-					i++
-					continue
-				}
-				if c == quote {
-					// MySQL escaped quote by doubling.
-					if i < len(s) && s[i] == quote {
-						b.WriteByte(s[i])
-						i++
-						continue
-					}
-					break
-				}
-			}
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
-}
-
-// firstKeyword returns the uppercased first SQL keyword token (ASCII letters/underscore).
-func firstKeyword(s string) string {
-	s = strings.TrimLeftFunc(s, unicode.IsSpace)
-	if s == "" {
-		return ""
-	}
-	end := 0
-	for end < len(s) && isIdentPart(s[end]) {
-		// SQL keywords are ASCII; digits allowed after first char only.
-		if end == 0 && !isIdentStart(s[end]) {
-			break
-		}
-		end++
-	}
-	if end == 0 || !isIdentStart(s[0]) {
-		return ""
-	}
-	return strings.ToUpper(s[:end])
-}
-
 // findTopLevelDenyKeyword walks SQL at paren depth 0 and returns the first
-// deny-list keyword (uppercased), or "" if none. Used for WITH … DML/DDL.
-func findTopLevelDenyKeyword(s string) string {
-	depth := 0
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		switch c {
-		case '(':
-			depth++
-			i++
-			continue
-		case ')':
-			if depth > 0 {
-				depth--
+// deny-list keyword, or "" if none. Used for WITH … DML/DDL.
+func findTopLevelDenyKeyword(tokens []sqllex.Token) string {
+	for _, token := range tokens[1:] {
+		if token.Depth == 0 {
+			if _, deny := withDenyKeywords[token.Word]; deny {
+				return token.Word
 			}
-			i++
-			continue
-		case '\'', '"', '`':
-			// Skip quoted spans (same rules as stripSQLComments).
-			quote := c
-			i++
-			for i < len(s) {
-				ch := s[i]
-				i++
-				if ch == '\\' && i < len(s) {
-					i++
-					continue
-				}
-				if ch == quote {
-					if i < len(s) && s[i] == quote {
-						i++
-						continue
-					}
-					break
-				}
-			}
-			continue
 		}
-
-		if depth == 0 && isIdentStart(c) {
-			start := i
-			i++
-			for i < len(s) && isIdentPart(s[i]) {
-				i++
-			}
-			word := strings.ToUpper(s[start:i])
-			if _, deny := withDenyKeywords[word]; deny {
-				return word
-			}
-			continue
-		}
-		i++
 	}
 	return ""
-}
-
-func isIdentStart(c byte) bool {
-	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_'
-}
-
-func isIdentPart(c byte) bool {
-	return isIdentStart(c) || c >= '0' && c <= '9'
 }

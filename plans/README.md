@@ -9,11 +9,10 @@ the status after completion.
 ## Project status
 
 - **Implemented and verified locally:** MySQL connection/config discovery,
-  read-only `query`, pretty JSON conversion, `ddl`, and snapshots (`save`,
-  `list`, `show`, private last-result cache, and `--from-last`), plus diff
-  estructurado de snapshots.
-- **Not implemented:** `dbx diff`, `dbx path`, `dbx danger`, and any Neovim
-  Lua plugin. These commands are currently explicit stubs in `cmd/dbx/main.go`.
+  read-only `query`, pretty JSON conversion, `ddl`, snapshots (`save`, `list`,
+  `show`, private last-result cache, and `--from-last`), structured snapshot
+  diff, bounded JSON paths, and offline SQL danger analysis.
+- **Not implemented:** the Neovim Lua plugin.
 - **Verification baseline:** `go test ./...`, `go vet ./...`, and
   `go build -o /tmp/dbx ./cmd/dbx` pass on the reviewed workspace. There is no
   repository CI configuration yet; it is deferred until the MVP commands land.
@@ -24,8 +23,8 @@ the status after completion.
 |---|---|---:|---:|---|---|
 | [001](001-secure-snapshot-persistence.md) | Preserve and secure snapshot data | P1 | M | — | DONE |
 | [002](002-structured-json-diff.md) | Compare snapshots structurally | P1 | M | 001 | DONE |
-| [003](003-json-path-filter.md) | Filter result data by a bounded path syntax | P1 | M | 001 | TODO |
-| [004](004-danger-analysis.md) | Report dangerous SQL without executing it | P1 | M | — | TODO |
+| [003](003-json-path-filter.md) | Filter result data by a bounded path syntax | P1 | M | 001 | DONE |
+| [004](004-danger-analysis.md) | Report dangerous SQL without executing it | P1 | M | — | DONE |
 | [005](005-neovim-mvp-client.md) | Expose the complete MVP through Neovim | P1 | M | 001, 002, 003, 004 | TODO |
 | [006](006-sqlite-test-connector.md) | Add a portable SQLite connector for integration tests | P2 | M | — | TODO |
 

@@ -94,11 +94,17 @@ rows[0].updated_at
 
 Esto debe ayudar a entender cambios de estado sin comparar visualmente tablas enormes.
 
-## JSONPath
+## Paths JSON acotados
 
-La herramienta debe permitir aplicar paths sobre resultados actuales o snapshots. El objetivo es filtrar estructuras grandes sin tener que leer todo el JSON manualmente.
+La herramienta puede aplicar paths acotados sobre el último resultado o un
+snapshot para reducir estructuras grandes. No es una implementación completa de
+JSONPath: no acepta `$`, filtros, scripts, claves entre comillas ni otras
+expresiones ejecutables.
 
-Debe soportar casos como consultar `metadata.fulfillment.status`, extraer valores específicos de arrays, encontrar campos dentro de payloads largos y reducir una salida grande a la parte relevante.
+Las filas del array raíz se recorren implícitamente. Por ejemplo,
+`metadata.status` sobre `[ {"metadata":{"status":"created"}} ]` devuelve
+`["created"]`. La salida siempre es un array JSON pretty, incluso si hay una
+sola coincidencia o ninguna.
 
 ## DDL
 
@@ -201,6 +207,53 @@ echo 'show tables' | dbx query --conn local_wms --config /path/to/config.yaml
 # Fallos: exit ≠ 0, mensaje en stderr (`error: …`), sin JSON parcial en stdout
 echo 'delete from orders' | dbx query --conn local_wms
 ```
+
+### Análisis de peligro sin ejecución
+
+`dbx danger` lee SQL desde stdin y devuelve un análisis JSON pretty. Es un
+comando exclusivamente local: no construye un DSN, no abre MySQL y tanto un
+resultado seguro como uno peligroso terminan con exit `0`. Flags inválidos,
+config o conexión inválida y SQL vacío terminan con exit distinto de cero,
+mensaje en stderr y stdout vacío.
+
+```bash
+echo 'SELECT * FROM orders' | dbx danger
+echo 'DELETE FROM orders' | dbx danger
+echo 'UPDATE orders SET status="done" WHERE id=42' \
+  | dbx danger --conn production --config .dbx/config.yaml
+```
+
+El envelope es estable y está pensado para clientes como Neovim:
+
+```json
+{
+  "type": "danger",
+  "safe": false,
+  "severity": "critical",
+  "findings": [
+    {
+      "code": "delete_without_where",
+      "message": "DELETE sin WHERE de nivel superior puede afectar todas las filas.",
+      "severity": "critical"
+    }
+  ]
+}
+```
+
+Severidades: `safe` (sin findings), `warning` (operación con efectos o bloqueo
+acotado) y `critical` (alto riesgo). Códigos actuales:
+
+- `multiple_statements`, `drop_statement`, `truncate_statement`,
+  `alter_statement`, `create_index`, `update_without_where` y
+  `delete_without_where`: `critical`.
+- `write_statement`, `select_into_file`, `select_for_update` y
+  `unrecognized_statement`: `warning`.
+- `restricted_environment_write`: `critical` adicional para toda sentencia no
+  de lectura al usar una conexión con `env: prod` o `env: readonly`.
+
+Este análisis es consultivo. La barrera de ejecución independiente de
+`dbx query` continúa rechazando todas las escrituras, incluso `UPDATE ...
+WHERE ...`.
 
 Flags:
 
@@ -423,6 +476,39 @@ dbx diff [--dir <path>] [--json] <before> <after>
 - Cambios: `added`, `removed` o `changed`. Los nombres de snapshot se validan
   antes de leer archivos y los errores no escriben salida parcial en stdout.
 
+## CLI: `dbx path`
+
+Filtra solamente el campo `data` del último `query` o de un snapshot validado.
+No lee stdin: sin `--snapshot` toma `.dbx/last.json`; con `--snapshot` lee el
+nombre indicado. En ambos casos imprime exclusivamente un array JSON pretty en
+stdout (también `[]` si no hay coincidencias).
+
+```bash
+# Fuente por defecto: el último dbx query exitoso
+dbx path 'metadata.fulfillment.status'
+
+# Fuente explícita: un snapshot
+dbx path --snapshot before_split_order 'items[*].id'
+
+# Snapshot en otro directorio
+dbx path --dir /tmp/dbx-snapshots --snapshot before_split_order 'items[0]'
+```
+
+```bash
+dbx path [--snapshot <name>] [--dir <path>] <selector>
+```
+
+| Selector | Significado | Ejemplo |
+|----------|-------------|---------|
+| `a.b` | Campo de objeto por puntos | `metadata.fulfillment.status` |
+| `a[0]` | Índice no negativo de un array | `items[0]` |
+| `a[*].b` | Recorre cada elemento de un array | `items[*].id` |
+
+Es una sintaxis de paths **acotada**, no JSONPath completo. No se soportan
+`$`, filtros, scripts, descenso recursivo, uniones ni claves entre comillas.
+El array raíz de filas se mapea implícitamente: `metadata.status` sobre cada
+fila devuelve un array con los valores que existan, en orden de encuentro.
+
 ### Last result (`dbx query`)
 
 Tras un `query` exitoso, **antes** de escribir stdout, se guarda:
@@ -440,7 +526,7 @@ El stdout de `query` **no cambia**: sigue siendo solo el array pretty de filas.
 
 ### Limitaciones (MVP)
 
-- Sin `path` aún (stub).
+- `path` implementa solo la sintaxis acotada documentada arriba; no JSONPath completo.
 - Sin límite de tamaño (igual que query).
 - Directorio = cwd del proceso (corre desde la raíz del proyecto).
 - SQL y datos en last/snapshot pueden contener información sensible; se guardan solo localmente, gitignored y con permisos privados del propietario por defecto.

@@ -310,13 +310,10 @@ func TestRunQuery_RunnerErrorNoStdout(t *testing.T) {
 	}
 }
 
-func TestRun_StubsAndVersion(t *testing.T) {
-	// Remaining stubs.
-	for _, cmd := range []string{"path", "danger"} {
-		err := run([]string{cmd})
-		if err == nil || !strings.Contains(err.Error(), "not implemented") {
-			t.Fatalf("command %q: want not implemented, got %v", cmd, err)
-		}
+func TestRun_CommandsAndVersion(t *testing.T) {
+	// path is implemented and requires a selector.
+	if err := run([]string{"path"}); err == nil || !strings.Contains(err.Error(), "exactly one selector") {
+		t.Fatalf("path without selector: got %v", err)
 	}
 
 	// snapshot is implemented: missing --name

@@ -27,9 +27,10 @@ func run(args []string) error {
 		return runSnapshot(args[1:])
 	case "diff":
 		return runDiff(args[1:])
-	case "path", "danger":
-		fmt.Fprintf(os.Stderr, "command %q is not implemented yet\n", args[0])
-		return fmt.Errorf("not implemented")
+	case "path":
+		return runPath(args[1:])
+	case "danger":
+		return runDanger(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("dbx 0.0.1")
 		return nil
