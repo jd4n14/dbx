@@ -9,6 +9,7 @@
 
 ## Status
 
+- **Implementation**: DONE (2026-07-10)
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: MED — an ambiguous selector language will be hard to change later.
@@ -122,13 +123,13 @@ tools.
 
 ## Done criteria
 
-- [ ] The three documented selector forms work and all output is valid pretty
+- [x] The three documented selector forms work and all output is valid pretty
   JSON arrays.
-- [ ] `dbx path` reads last result by default and a named snapshot with
+- [x] `dbx path` reads last result by default and a named snapshot with
   `--snapshot`.
-- [ ] Unsupported JSONPath syntax is rejected, never silently misinterpreted.
-- [ ] `go test ./... -count=1` and `go vet ./...` pass.
-- [ ] README is updated and Plan 003 is DONE.
+- [x] Unsupported JSONPath syntax is rejected, never silently misinterpreted.
+- [x] `go test ./... -count=1` and `go vet ./...` pass.
+- [x] README is updated and Plan 003 is DONE.
 
 ## STOP conditions
 
