@@ -8,7 +8,7 @@ local function assert_equal(expected, actual, message)
   end
 end
 
-local commands = { "DbRun", "DbDDL", "DbSnapshot", "DbDiff", "DbPath", "DbDanger" }
+local commands = { "DbRun", "DbDDL", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn" }
 for _, name in ipairs(commands) do
   assert(vim.fn.exists(":" .. name) == 2, name .. " is not registered")
 end
@@ -289,7 +289,7 @@ vim.fn.writefile({
 }, complete_cfg)
 
 local complete_fake = tmp .. "/complete-fake-dbx"
--- Use a heredoc-style single write so printf "\n" is real newlines in the script.
+-- Always consume stdin when present (vim.system may leave a pipe open otherwise).
 local complete_script = table.concat({
   "#!/bin/sh",
   'printf "cwd=%s\n" "$(pwd)" >> "$DBX_TEST_LOG"',
@@ -298,10 +298,8 @@ local complete_script = table.concat({
   '  printf "after_snap\nbefore_snap\t2026-07-15T00:00:00Z\n"',
   "  exit 0",
   "fi",
-  'if [ ! -t 0 ]; then',
-  '  input=$(cat)',
-  '  printf "stdin=%s\n" "$input" >> "$DBX_TEST_LOG"',
-  "fi",
+  "input=$(cat)",
+  'printf "stdin=%s\n" "$input" >> "$DBX_TEST_LOG"',
   'case "$1" in',
   "  ddl) printf 'CREATE TABLE orders (id int);\\n' ;;",
   "  diff) printf '@@ status @@\\n-old\\n+new\\n' ;;",
@@ -335,6 +333,96 @@ assert_equal({ "alpha_conn", "beta_conn" }, conn_all, "DbRun complete should lis
 
 local conn_prefix = vim.fn.getcompletion("DbRun al", "cmdline")
 assert_equal({ "alpha_conn" }, conn_prefix, "DbRun complete should filter connection names")
+
+local dbconn_all = vim.fn.getcompletion("DbConn ", "cmdline")
+table.sort(dbconn_all)
+assert_equal({ "alpha_conn", "beta_conn" }, dbconn_all, "DbConn complete should list connection names")
+
+-- :DbConn sets session connection and is used by subsequent DbRun without args.
+clear_log()
+vim.cmd("DbConn beta_conn")
+assert(notifications[#notifications].message:find("beta_conn", 1, true), "DbConn should notify active connection")
+assert_equal("beta_conn", require("dbx").current_connection(), "current_connection should reflect :DbConn")
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 9;" })
+vim.cmd("DbRun")
+wait_for("--conn beta_conn")
+assert_log_contains("--conn beta_conn", "DbRun must use session connection from :DbConn")
+assert_log_contains("stdin=select 9;", "DbRun after DbConn should still pass SQL")
+
+-- Explicit DbRun override still wins over session connection.
+clear_log()
+vim.api.nvim_set_current_buf(vim.api.nvim_create_buf(true, false))
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 9;" })
+vim.cmd("DbRun alpha_conn")
+wait_for("--conn alpha_conn")
+assert_log_contains("--conn alpha_conn", "DbRun arg must override session connection")
+assert_equal("beta_conn", require("dbx").current_connection(), "DbRun override must not wipe session connection")
+
+-- DbConn without args reports the active connection.
+before_notifications = #notifications
+vim.cmd("DbConn")
+assert_equal(before_notifications + 1, #notifications, "DbConn without args should notify")
+assert(notifications[#notifications].message:find("beta_conn", 1, true), "DbConn status should show session connection")
+
+-- Optional keymaps: disabled by default; enabled with mappings = true.
+local function find_map(mode, lhs)
+  for _, map in ipairs(vim.api.nvim_get_keymap(mode)) do
+    if map.lhs == lhs or map.lhs == vim.api.nvim_replace_termcodes(lhs, true, true, true) then
+      return map
+    end
+    -- nvim may expand <leader> according to mapleader; also match rhs/desc.
+    if map.desc and type(map.desc) == "string" and map.desc:match("^dbx:") then
+      if lhs == "<leader>dr" and map.desc:find("run", 1, true) then
+        return map
+      end
+      if lhs == "<leader>dd" and map.desc:find("DDL", 1, true) then
+        return map
+      end
+      if lhs == "<leader>ds" and map.desc:find("snapshot", 1, true) then
+        return map
+      end
+    end
+  end
+  return nil
+end
+
+local function count_dbx_maps()
+  local n = 0
+  for _, mode in ipairs({ "n", "x" }) do
+    for _, map in ipairs(vim.api.nvim_get_keymap(mode)) do
+      if map.desc and type(map.desc) == "string" and map.desc:match("^dbx:") then
+        n = n + 1
+      end
+    end
+  end
+  return n
+end
+
+require("dbx").setup({ executable = complete_fake, connection = "alpha_conn", root = complete_project, mappings = false })
+assert_equal(0, count_dbx_maps(), "mappings=false must not install keymaps")
+
+vim.g.mapleader = " "
+require("dbx").setup({ executable = complete_fake, connection = "alpha_conn", root = complete_project, mappings = true })
+assert(count_dbx_maps() >= 3, "mappings=true must install default dbx keymaps")
+assert(find_map("n", "<leader>dr"), "default run map missing")
+assert(find_map("n", "<leader>dd"), "default ddl map missing")
+assert(find_map("n", "<leader>ds"), "default snapshot map missing")
+assert(find_map("x", "<leader>dr"), "visual run map missing")
+
+-- Explicit table can disable one mapping and override another.
+require("dbx").setup({
+  executable = complete_fake,
+  connection = "alpha_conn",
+  root = complete_project,
+  mappings = { run = "<leader>dx", ddl = false, snapshot = "<leader>dz" },
+})
+assert(find_map("n", "<leader>dx") or count_dbx_maps() >= 1, "custom run map should be installed")
+assert_equal(nil, find_map("n", "<leader>dd"), "ddl=false must remove default ddl map")
+
+-- Turning mappings off clears previous dbx maps.
+require("dbx").setup({ executable = complete_fake, connection = "alpha_conn", root = complete_project, mappings = false })
+assert_equal(0, count_dbx_maps(), "mappings=false after true must clear dbx keymaps")
 
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")

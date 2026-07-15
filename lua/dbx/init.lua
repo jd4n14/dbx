@@ -5,6 +5,18 @@ local config = {
   connection = nil,
   ---@type string|fun():string|nil
   root = nil,
+  ---@type boolean|table
+  -- false/nil: no keymaps; true: default leader maps; table: explicit lhs overrides.
+  mappings = false,
+}
+
+-- Session connection override set by :DbConn (takes precedence over setup.connection).
+local session_connection = nil
+
+local default_mappings = {
+  run = "<leader>dr",
+  ddl = "<leader>dd",
+  snapshot = "<leader>ds",
 }
 
 local function notify(message, level)
@@ -237,10 +249,26 @@ end
 local function connection(override)
   local value = override and vim.trim(override) or ""
   if value == "" then
+    value = session_connection and vim.trim(session_connection) or ""
+  end
+  if value == "" then
     value = config.connection and vim.trim(config.connection) or ""
   end
   if value == "" then
-    notify("Configura una conexión con require('dbx').setup({ connection = 'nombre' })")
+    notify("Configura una conexión con :DbConn <nombre> o require('dbx').setup({ connection = 'nombre' })")
+    return nil
+  end
+  return value
+end
+
+--- Active connection for this Neovim session (session override, then setup default).
+---@return string|nil
+function M.current_connection()
+  local value = session_connection and vim.trim(session_connection) or ""
+  if value == "" then
+    value = config.connection and vim.trim(config.connection) or ""
+  end
+  if value == "" then
     return nil
   end
   return value
@@ -453,6 +481,109 @@ local function register_commands()
       run({ "danger", "--conn", conn }, { stdin = sql_source(opts), kind = "danger", filetype = "json" })
     end
   end, { nargs = 0, range = true, desc = "Analiza SQL peligroso sin ejecutarlo" })
+
+  vim.api.nvim_create_user_command("DbConn", function(opts)
+    local name = vim.trim(opts.args or "")
+    if name == "" then
+      local current = M.current_connection()
+      if current then
+        notify("Conexión activa: " .. current, vim.log.levels.INFO)
+      else
+        notify("No hay conexión activa. Usa :DbConn <nombre>")
+      end
+      return
+    end
+    session_connection = name
+    notify("Conexión activa: " .. name, vim.log.levels.INFO)
+  end, {
+    nargs = "?",
+    complete = complete_connections,
+    desc = "Cambia o muestra la conexión activa de la sesión",
+  })
+end
+
+local function clear_dbx_keymaps()
+  for _, map in ipairs(vim.api.nvim_get_keymap("n")) do
+    if map.desc and type(map.desc) == "string" and map.desc:match("^dbx:") then
+      pcall(vim.keymap.del, "n", map.lhs)
+    end
+  end
+  for _, map in ipairs(vim.api.nvim_get_keymap("x")) do
+    if map.desc and type(map.desc) == "string" and map.desc:match("^dbx:") then
+      pcall(vim.keymap.del, "x", map.lhs)
+    end
+  end
+end
+
+--- Resolve effective mapping table from setup option.
+--- false/nil → none; true → defaults; table → merge overrides (false disables a key).
+---@param mappings boolean|table|nil
+---@return table|nil map of action -> lhs
+local function resolve_mappings(mappings)
+  if mappings == nil or mappings == false then
+    return nil
+  end
+  local base = {
+    run = default_mappings.run,
+    ddl = default_mappings.ddl,
+    snapshot = default_mappings.snapshot,
+  }
+  if mappings == true then
+    return base
+  end
+  if type(mappings) ~= "table" then
+    return nil
+  end
+  for key, lhs in pairs(mappings) do
+    if lhs == false or lhs == "" then
+      base[key] = nil
+    elseif type(lhs) == "string" then
+      base[key] = lhs
+    end
+  end
+  return base
+end
+
+local function register_keymaps(mappings)
+  clear_dbx_keymaps()
+  local resolved = resolve_mappings(mappings)
+  if not resolved then
+    return
+  end
+
+  local function map(mode, lhs, rhs, desc)
+    if not lhs or lhs == "" then
+      return
+    end
+    vim.keymap.set(mode, lhs, rhs, { silent = true, desc = "dbx: " .. desc })
+  end
+
+  if resolved.run then
+    map("n", resolved.run, ":DbRun<CR>", "run statement under cursor")
+    -- Visual mode: feed the range command so DbRun sees command_opts.range.
+    map("x", resolved.run, ":DbRun<CR>", "run visual selection")
+  end
+
+  if resolved.ddl then
+    map("n", resolved.ddl, function()
+      vim.cmd("DbDDL")
+    end, "DDL for word under cursor")
+  end
+
+  if resolved.snapshot then
+    map("n", resolved.snapshot, function()
+      local name = vim.fn.input("DbSnapshot name: ")
+      if name == nil then
+        return
+      end
+      name = vim.trim(name)
+      if name == "" then
+        notify("DbSnapshot requiere un nombre")
+        return
+      end
+      vim.cmd("DbSnapshot " .. name)
+    end, "snapshot prompt")
+  end
 end
 
 function M.setup(opts)
@@ -461,6 +592,7 @@ function M.setup(opts)
     config.executable = opts.executable
   end
   if opts.connection ~= nil then
+    -- Updating the setup default does not wipe a live :DbConn session override.
     config.connection = opts.connection
   end
   if opts.root ~= nil then
@@ -471,7 +603,11 @@ function M.setup(opts)
       config.root = opts.root
     end
   end
+  if opts.mappings ~= nil then
+    config.mappings = opts.mappings
+  end
   register_commands()
+  register_keymaps(config.mappings)
 end
 
 return M

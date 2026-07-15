@@ -172,7 +172,11 @@ de que el ejecutable `dbx` esté en `PATH`. Después configura una conexión que
 exista en el YAML de dbx:
 
 ```lua
-require("dbx").setup({ executable = "dbx", connection = "local_wms" })
+require("dbx").setup({
+  executable = "dbx",
+  connection = "local_wms",
+  -- mappings = true, -- opcional: <leader>dr / <leader>dd / <leader>ds
+})
 ```
 
 Las credenciales permanecen en la configuración de dbx; el plugin no las copia
@@ -182,6 +186,9 @@ ni las conserva en Lua. Los comandos disponibles son:
   statement bajo el cursor (separado por `;` de nivel superior). El argumento
   opcional sustituye la conexión solo para esa llamada. Completa nombres de
   conexión del YAML de dbx.
+- `:DbConn [connection]`: fija la conexión activa de la sesión (tiene prioridad
+  sobre `setup.connection`) o, sin argumentos, muestra la conexión actual.
+  Completa nombres de conexión del YAML.
 - `:DbDDL [table]`: muestra SQL para la tabla indicada o para la palabra bajo el
   cursor.
 - `:DbSnapshot <name>`: guarda el último resultado mediante
@@ -194,6 +201,17 @@ ni las conserva en Lua. Los comandos disponibles son:
   primer argumento opcional.
 - `:DbDanger`: analiza la selección/rango visual o todo el buffer y abre el
   envelope consultivo en un buffer `json`; nunca se ejecuta automáticamente.
+
+Keymaps son **opt-in** (no se imponen defaults agresivos):
+
+```lua
+require("dbx").setup({
+  connection = "local_wms",
+  mappings = true, -- <leader>dr run, <leader>dd ddl, <leader>ds snapshot prompt
+})
+-- o tabla explícita; false desactiva una tecla:
+-- mappings = { run = "<leader>dr", ddl = false, snapshot = "<leader>ds" }
+```
 
 Completions de cmdline usan el project root resuelto por el plugin (cwd del CLI)
 y no piden input interactivo. Las salidas se abren en splits scratch y nunca
