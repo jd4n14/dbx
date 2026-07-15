@@ -57,20 +57,70 @@ local function current_result(filetype)
   assert_equal(filetype, vim.bo.filetype, "wrong result filetype")
 end
 
+local function clear_log()
+  vim.fn.writefile({}, log)
+end
+
+local function log_text()
+  if vim.fn.filereadable(log) == 0 then
+    return ""
+  end
+  return table.concat(vim.fn.readfile(log), "\n")
+end
+
+local function assert_log_contains(needle, message)
+  assert(log_text():find(needle, 1, true), message or ("log missing: " .. needle))
+end
+
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;", "select 2;" })
 local source = vim.api.nvim_get_current_buf()
 vim.cmd("1DbRun override_conn")
 wait_for("query --conn override_conn")
 current_result("json")
-assert(table.concat(vim.fn.readfile(log), "\n"):find("stdin=select 1;", 1, true), "DbRun did not pass selected SQL")
+assert_log_contains("stdin=select 1;", "DbRun did not pass selected SQL")
 assert_equal({ "select 1;", "select 2;" }, vim.api.nvim_buf_get_lines(source, 0, -1, false), "DbRun mutated source")
+
+-- Without a range, DbRun must send only the statement under the cursor.
+vim.api.nvim_set_current_buf(source)
+vim.api.nvim_win_set_buf(0, source)
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+clear_log()
+vim.cmd("DbRun")
+wait_for("stdin=select 1;")
+assert_log_contains("query --conn local_wms", "DbRun without range should use default connection")
+assert(not log_text():find("stdin=select 1;\nselect 2;", 1, true), "DbRun without range must not send full multi-statement buffer")
+assert(not log_text():find("stdin=select 2;", 1, true), "cursor on first statement must not send second")
+
+vim.api.nvim_set_current_buf(source)
+vim.api.nvim_win_set_buf(0, source)
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+clear_log()
+vim.cmd("DbRun")
+wait_for("stdin=select 2;")
+assert_log_contains("stdin=select 2;", "DbRun did not pass statement under cursor")
+assert(not log_text():find("stdin=select 1;", 1, true), "cursor on second statement must not send first")
+assert(not log_text():find("stdin=select 1;\nselect 2;", 1, true), "DbRun without range must not send full buffer")
+
+-- Pure helper coverage for blank-line between statements and quoted semicolons.
+local sql = require("dbx.sql")
+local multi = table.concat({
+  "select 1;",
+  "",
+  "select ';';",
+  "select 3",
+}, "\n")
+assert_equal("select 1;", sql.statement_under_cursor(multi, 1, 0), "first statement")
+assert_equal("select 1;", sql.statement_under_cursor(multi, 2, 0), "blank line prefers previous statement")
+assert_equal("select ';';", sql.statement_under_cursor(multi, 3, 0), "semicolon inside quotes is not a terminator")
+assert_equal("select 3", sql.statement_under_cursor(multi, 4, 0), "final statement without trailing semicolon")
+assert_equal(nil, sql.statement_under_cursor("   \n  ", 1, 0), "empty buffer has no statement")
 
 vim.api.nvim_set_current_buf(source)
 vim.cmd("DbDanger")
 wait_for("danger --conn local_wms")
 current_result("json")
-assert(table.concat(vim.fn.readfile(log), "\n"):find("stdin=select 1;\nselect 2;", 1, true), "DbDanger did not pass full buffer")
+assert_log_contains("stdin=select 1;\nselect 2;", "DbDanger did not pass full buffer")
 
 vim.cmd("DbDDL orders")
 wait_for("ddl --conn local_wms --table orders")

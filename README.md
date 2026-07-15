@@ -178,8 +178,9 @@ require("dbx").setup({ executable = "dbx", connection = "local_wms" })
 Las credenciales permanecen en la configuración de dbx; el plugin no las copia
 ni las conserva en Lua. Los comandos disponibles son:
 
-- `:DbRun [connection]`: ejecuta la selección/rango visual o, sin rango, todo
-  el buffer. El argumento opcional sustituye la conexión solo para esa llamada.
+- `:DbRun [connection]`: ejecuta la selección/rango visual o, sin rango, el
+  statement bajo el cursor (separado por `;` de nivel superior). El argumento
+  opcional sustituye la conexión solo para esa llamada.
 - `:DbDDL [table]`: muestra SQL para la tabla indicada o para la palabra bajo el
   cursor.
 - `:DbSnapshot <name>`: guarda el último resultado mediante

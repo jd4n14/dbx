@@ -89,23 +89,51 @@ local function connection(override)
   return value
 end
 
+local sql = require("dbx.sql")
+
+local function buffer_text(bufnr)
+  return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+end
+
+local function range_source(bufnr, command_opts)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, command_opts.line1 - 1, command_opts.line2, false)
+  local start_mark = vim.api.nvim_buf_get_mark(bufnr, "<")
+  local end_mark = vim.api.nvim_buf_get_mark(bufnr, ">")
+  if vim.fn.visualmode() == "v"
+    and start_mark[1] == command_opts.line1
+    and end_mark[1] == command_opts.line2
+    and #lines > 0
+  then
+    lines[#lines] = lines[#lines]:sub(1, end_mark[2] + 1)
+    lines[1] = lines[1]:sub(start_mark[2] + 1)
+  end
+  return table.concat(lines, "\n")
+end
+
+--- SQL source for range-aware commands (DbDanger keeps full buffer without range).
 local function sql_source(command_opts)
   local bufnr = vim.api.nvim_get_current_buf()
   if command_opts.range and command_opts.range > 0 then
-    local lines = vim.api.nvim_buf_get_lines(bufnr, command_opts.line1 - 1, command_opts.line2, false)
-    local start_mark = vim.api.nvim_buf_get_mark(bufnr, "<")
-    local end_mark = vim.api.nvim_buf_get_mark(bufnr, ">")
-    if vim.fn.visualmode() == "v"
-      and start_mark[1] == command_opts.line1
-      and end_mark[1] == command_opts.line2
-      and #lines > 0
-    then
-      lines[#lines] = lines[#lines]:sub(1, end_mark[2] + 1)
-      lines[1] = lines[1]:sub(start_mark[2] + 1)
-    end
-    return table.concat(lines, "\n")
+    return range_source(bufnr, command_opts)
   end
-  return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+  return buffer_text(bufnr)
+end
+
+--- DbRun: range/visual selection, otherwise the statement under the cursor.
+local function dbrun_source(command_opts)
+  local bufnr = vim.api.nvim_get_current_buf()
+  if command_opts.range and command_opts.range > 0 then
+    return range_source(bufnr, command_opts)
+  end
+
+  local text = buffer_text(bufnr)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local statement = sql.statement_under_cursor(text, cursor[1], cursor[2])
+  if not statement or statement == "" then
+    notify("No hay un statement SQL bajo el cursor")
+    return nil
+  end
+  return statement
 end
 
 local function register_commands()
@@ -116,9 +144,14 @@ local function register_commands()
 
   vim.api.nvim_create_user_command("DbRun", function(opts)
     local conn = connection(opts.args)
-    if conn then
-      run({ "query", "--conn", conn }, { stdin = sql_source(opts), kind = "query", filetype = "json" })
+    if not conn then
+      return
     end
+    local source = dbrun_source(opts)
+    if source == nil then
+      return
+    end
+    run({ "query", "--conn", conn }, { stdin = source, kind = "query", filetype = "json" })
   end, { nargs = "?", range = true, desc = "Ejecuta SQL de inspección con dbx" })
 
   vim.api.nvim_create_user_command("DbDDL", function(opts)
