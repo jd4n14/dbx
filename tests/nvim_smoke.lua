@@ -13,6 +13,43 @@ for _, name in ipairs(commands) do
   assert(vim.fn.exists(":" .. name) == 2, name .. " is not registered")
 end
 
+-- Pure completion helpers (no CLI).
+local complete = require("dbx.complete")
+assert_equal(
+  { "before", "after" },
+  complete.parse_snapshot_list("before\t2026-07-15T00:00:00Z\nafter\n"),
+  "parse_snapshot_list should take the name column"
+)
+assert_equal({}, complete.parse_snapshot_list(""), "empty snapshot list")
+assert_equal(
+  { "local_wms", "prod_ro" },
+  complete.parse_connection_names(table.concat({
+    "# comment",
+    "connections:",
+    "  local_wms:",
+    "    host: 127.0.0.1",
+    "    user: root",
+    "    database: wms",
+    "  prod_ro:",
+    "    host: db.example",
+    "    user: ro",
+    "    database: wms",
+    "    env: readonly",
+    "other: true",
+  }, "\n")),
+  "parse_connection_names should list top-level connection keys"
+)
+assert_equal(
+  { "local_wms" },
+  complete.filter_prefix({ "local_wms", "prod_ro", "lab" }, "lo"),
+  "filter_prefix should keep prefix matches"
+)
+assert_equal(
+  { "local_wms", "prod_ro", "lab" },
+  complete.filter_prefix({ "local_wms", "prod_ro", "lab" }, ""),
+  "empty arglead returns all items"
+)
+
 local tmp = vim.fn.tempname()
 vim.fn.mkdir(tmp, "p")
 local log = tmp .. "/calls.log"
@@ -234,6 +271,70 @@ assert(not log_text():find("--config ", 1, true), "no --config when forced root 
 
 -- Clear root override so later assertions (if added) use discovery again.
 require("dbx").setup({ executable = fake, connection = "local_wms", root = false })
+
+-- Completions: fake CLI lists snapshots; project config supplies connection names.
+local complete_project = tmp .. "/complete-project"
+vim.fn.mkdir(complete_project .. "/.dbx", "p")
+local complete_cfg = complete_project .. "/.dbx/config.yaml"
+vim.fn.writefile({
+  "connections:",
+  "  alpha_conn:",
+  "    host: 127.0.0.1",
+  "    user: a",
+  "    database: db",
+  "  beta_conn:",
+  "    host: 127.0.0.1",
+  "    user: b",
+  "    database: db",
+}, complete_cfg)
+
+local complete_fake = tmp .. "/complete-fake-dbx"
+-- Use a heredoc-style single write so printf "\n" is real newlines in the script.
+local complete_script = table.concat({
+  "#!/bin/sh",
+  'printf "cwd=%s\n" "$(pwd)" >> "$DBX_TEST_LOG"',
+  'printf "%s\n" "$*" >> "$DBX_TEST_LOG"',
+  'if [ "$1" = snapshot ] && [ "$2" = list ]; then',
+  '  printf "after_snap\nbefore_snap\t2026-07-15T00:00:00Z\n"',
+  "  exit 0",
+  "fi",
+  'if [ ! -t 0 ]; then',
+  '  input=$(cat)',
+  '  printf "stdin=%s\n" "$input" >> "$DBX_TEST_LOG"',
+  "fi",
+  'case "$1" in',
+  "  ddl) printf 'CREATE TABLE orders (id int);\\n' ;;",
+  "  diff) printf '@@ status @@\\n-old\\n+new\\n' ;;",
+  "  snapshot) printf '/tmp/before.json\\n' ;;",
+  '  *) printf \'[{"ok":true}]\\n\' ;;',
+  "esac",
+}, "\n") .. "\n"
+vim.fn.writefile(vim.split(complete_script, "\n", { plain = true }), complete_fake)
+vim.fn.setfperm(complete_fake, "rwx------")
+
+require("dbx").setup({ executable = complete_fake, connection = "alpha_conn", root = complete_project })
+clear_log()
+
+local snap_all = vim.fn.getcompletion("DbSnapshot ", "cmdline")
+assert_equal({ "after_snap", "before_snap" }, snap_all, "DbSnapshot complete should list snapshot names")
+assert_log_contains("snapshot list", "completion must call dbx snapshot list")
+assert_log_contains("cwd=" .. complete_project, "snapshot list must run under project root")
+
+local snap_prefix = vim.fn.getcompletion("DbSnapshot be", "cmdline")
+assert_equal({ "before_snap" }, snap_prefix, "DbSnapshot complete should filter by prefix")
+
+local diff_all = vim.fn.getcompletion("DbDiff ", "cmdline")
+assert_equal({ "after_snap", "before_snap" }, diff_all, "DbDiff complete should list snapshots")
+
+local path_all = vim.fn.getcompletion("DbPath ", "cmdline")
+assert_equal({ "after_snap", "before_snap" }, path_all, "DbPath complete should list snapshots for optional name")
+
+local conn_all = vim.fn.getcompletion("DbRun ", "cmdline")
+table.sort(conn_all)
+assert_equal({ "alpha_conn", "beta_conn" }, conn_all, "DbRun complete should list connection names from config")
+
+local conn_prefix = vim.fn.getcompletion("DbRun al", "cmdline")
+assert_equal({ "alpha_conn" }, conn_prefix, "DbRun complete should filter connection names")
 
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")

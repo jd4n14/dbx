@@ -180,18 +180,24 @@ ni las conserva en Lua. Los comandos disponibles son:
 
 - `:DbRun [connection]`: ejecuta la selección/rango visual o, sin rango, el
   statement bajo el cursor (separado por `;` de nivel superior). El argumento
-  opcional sustituye la conexión solo para esa llamada.
+  opcional sustituye la conexión solo para esa llamada. Completa nombres de
+  conexión del YAML de dbx.
 - `:DbDDL [table]`: muestra SQL para la tabla indicada o para la palabra bajo el
   cursor.
 - `:DbSnapshot <name>`: guarda el último resultado mediante
-  `dbx snapshot --from-last` y notifica la ruta creada.
+  `dbx snapshot --from-last` y notifica la ruta creada. Completa nombres de
+  snapshots existentes (`dbx snapshot list`).
 - `:DbDiff <before> <after>`: abre el diff estructurado en un buffer `diff`.
+  Completa nombres de snapshots en ambos argumentos.
 - `:DbPath [snapshot] <path>`: filtra el último resultado o el snapshot indicado
-  y abre la respuesta en un buffer `json`.
+  y abre la respuesta en un buffer `json`. Completa nombres de snapshots para el
+  primer argumento opcional.
 - `:DbDanger`: analiza la selección/rango visual o todo el buffer y abre el
   envelope consultivo en un buffer `json`; nunca se ejecuta automáticamente.
 
-Las salidas se abren en splits scratch y nunca reemplazan el buffer SQL fuente.
+Completions de cmdline usan el project root resuelto por el plugin (cwd del CLI)
+y no piden input interactivo. Las salidas se abren en splits scratch y nunca
+reemplazan el buffer SQL fuente.
 Un flujo completo puede hacerse así: selecciona el query y ejecuta `:DbRun`,
 guarda `:DbSnapshot before`, realiza el cambio en la aplicación, repite
 `:DbRun`, guarda `:DbSnapshot after`, compara con `:DbDiff before after` y
