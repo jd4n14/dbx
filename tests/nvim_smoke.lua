@@ -19,6 +19,7 @@ local log = tmp .. "/calls.log"
 local fake = tmp .. "/fake-dbx"
 vim.fn.writefile({
   "#!/bin/sh",
+  "printf 'cwd=%s\\n' \"$(pwd)\" >> \"$DBX_TEST_LOG\"",
   "printf '%s\\n' \"$*\" >> \"$DBX_TEST_LOG\"",
   "input=$(cat)",
   "printf 'stdin=%s\\n' \"$input\" >> \"$DBX_TEST_LOG\"",
@@ -33,7 +34,10 @@ vim.fn.writefile({
 vim.fn.setfperm(fake, "rwx------")
 vim.env.DBX_TEST_LOG = log
 
-require("dbx").setup({ executable = fake, connection = "local_wms" })
+-- Neutral cwd root without project markers so baseline argv stays stable.
+local neutral = tmp .. "/neutral"
+vim.fn.mkdir(neutral, "p")
+require("dbx").setup({ executable = fake, connection = "local_wms", root = neutral })
 
 local notifications = {}
 vim.notify = function(message, level)
@@ -143,16 +147,16 @@ wait_for("snapshot --from-last --name before")
 assert(notifications[#notifications].message:find("/tmp/before.json", 1, true), "snapshot path was not notified")
 
 local before_notifications = #notifications
-require("dbx").setup({ executable = tmp .. "/missing", connection = "local_wms" })
+require("dbx").setup({ executable = tmp .. "/missing", connection = "local_wms", root = neutral })
 vim.cmd("DbPath metadata.status")
 assert_equal(before_notifications + 1, #notifications, "missing executable must notify")
 assert(notifications[#notifications].message:find("No se encontró", 1, true), "missing executable notification is unclear")
 
-require("dbx").setup({ executable = fake, connection = "" })
+require("dbx").setup({ executable = fake, connection = "", root = neutral })
 vim.cmd("DbRun")
 assert(notifications[#notifications].message:find("Configura una conexión", 1, true), "missing connection must notify")
 
-require("dbx").setup({ executable = fake, connection = "local_wms" })
+require("dbx").setup({ executable = fake, connection = "local_wms", root = neutral })
 vim.cmd("DbSnapshot")
 assert(notifications[#notifications].message:find("requiere un nombre", 1, true), "missing snapshot name must notify")
 
@@ -160,11 +164,76 @@ assert(notifications[#notifications].message:find("requiere un nombre", 1, true)
 local failing = tmp .. "/failing-dbx"
 vim.fn.writefile({ "#!/bin/sh", "printf 'fake failure\\n' >&2", "exit 7" }, failing)
 vim.fn.setfperm(failing, "rwx------")
-require("dbx").setup({ executable = failing, connection = "local_wms" })
+require("dbx").setup({ executable = failing, connection = "local_wms", root = neutral })
 before_notifications = #notifications
 vim.cmd("DbPath metadata.status")
 assert(vim.wait(3000, function() return #notifications > before_notifications end, 10), "process failure did not notify")
 assert(notifications[#notifications].message:find("fake failure", 1, true), "stderr was not shown on error")
+
+-- Project root: buffer under a temp project with .dbx/config.yaml must set cwd + --config.
+local dbx = require("dbx")
+local project = tmp .. "/project"
+local nested = project .. "/sql/queries"
+vim.fn.mkdir(nested, "p")
+vim.fn.mkdir(project .. "/.dbx", "p")
+local project_cfg = project .. "/.dbx/config.yaml"
+vim.fn.writefile({ "connections: {}", "project: true" }, project_cfg)
+local sql_file = nested .. "/demo.sql"
+vim.fn.writefile({ "select 42;" }, sql_file)
+
+-- Pure helpers
+assert_equal(project, dbx.find_project_root(nested), "find_project_root should walk up to .dbx")
+assert_equal(project_cfg, dbx.project_config_path(project), "project_config_path should return config.yaml")
+assert_equal(nil, dbx.project_config_path(tmp), "project_config_path without config should be nil")
+
+-- Clear forced root so discovery walks from the buffer file path.
+require("dbx").setup({ executable = fake, connection = "local_wms", root = false })
+vim.cmd("edit " .. vim.fn.fnameescape(sql_file))
+clear_log()
+vim.cmd("DbRun")
+wait_for("cwd=" .. project)
+assert_log_contains("cwd=" .. project, "CLI cwd must be the project root from buffer path")
+assert_log_contains("--config " .. project_cfg, "CLI must pass --config when project config exists")
+assert_log_contains("query --config " .. project_cfg .. " --conn local_wms", "config flag should follow subcommand")
+assert_log_contains("stdin=select 42;", "DbRun from file should still pass statement")
+
+-- setup { root = fixed } forces that cwd (and config under that root if present).
+local forced = tmp .. "/forced-root"
+vim.fn.mkdir(forced .. "/.dbx", "p")
+local forced_cfg = forced .. "/.dbx/config.yaml"
+vim.fn.writefile({ "connections: {}" }, forced_cfg)
+require("dbx").setup({ executable = fake, connection = "local_wms", root = forced })
+clear_log()
+vim.cmd("DbRun")
+wait_for("cwd=" .. forced)
+assert_log_contains("cwd=" .. forced, "setup root string must force CLI cwd")
+assert_log_contains("query --config " .. forced_cfg .. " --conn local_wms", "forced root config should be passed on query")
+
+-- Commands without --config support (snapshot/path/diff) still get stable cwd only.
+clear_log()
+vim.cmd("DbPath metadata.status")
+wait_for("cwd=" .. forced)
+assert_log_contains("cwd=" .. forced, "DbPath must use forced root cwd")
+assert(not log_text():find("--config ", 1, true), "DbPath must not receive --config")
+
+-- setup { root = function } also works.
+local fn_root = tmp .. "/fn-root"
+vim.fn.mkdir(fn_root, "p")
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = function()
+    return fn_root
+  end,
+})
+clear_log()
+vim.cmd("DbPath metadata.status")
+wait_for("cwd=" .. fn_root)
+assert_log_contains("cwd=" .. fn_root, "setup root function must force CLI cwd")
+assert(not log_text():find("--config ", 1, true), "no --config when forced root has no config.yaml / path cmd")
+
+-- Clear root override so later assertions (if added) use discovery again.
+require("dbx").setup({ executable = fake, connection = "local_wms", root = false })
 
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")

@@ -3,6 +3,8 @@ local M = {}
 local config = {
   executable = "dbx",
   connection = nil,
+  ---@type string|fun():string|nil
+  root = nil,
 }
 
 local function notify(message, level)
@@ -48,6 +50,157 @@ local function executable_available(executable)
   return executable ~= nil and executable ~= "" and vim.fn.executable(executable) == 1
 end
 
+local function is_directory(path)
+  return path ~= nil and path ~= "" and vim.fn.isdirectory(path) == 1
+end
+
+local function path_exists(path)
+  return path ~= nil and path ~= "" and vim.fn.filereadable(path) == 1
+end
+
+local function normalize_dir(path)
+  if not path or path == "" then
+    return nil
+  end
+  return vim.fn.fnamemodify(path, ":p"):gsub("/+$", "")
+end
+
+local function parent_dir(path)
+  local parent = vim.fn.fnamemodify(path, ":h")
+  if parent == path then
+    return nil
+  end
+  return parent
+end
+
+--- True when `dir` looks like a dbx/git project root.
+local function is_project_marker(dir)
+  if path_exists(dir .. "/.dbx/config.yaml") then
+    return true
+  end
+  if is_directory(dir .. "/.dbx") then
+    return true
+  end
+  if is_directory(dir .. "/.git") or path_exists(dir .. "/.git") then
+    return true
+  end
+  return false
+end
+
+--- Walk upward from `start_dir` looking for `.dbx/config.yaml`, `.dbx/`, or `.git`.
+---@param start_dir string|nil
+---@return string|nil
+function M.find_project_root(start_dir)
+  local dir = normalize_dir(start_dir)
+  if not dir or not is_directory(dir) then
+    return nil
+  end
+
+  local seen = {}
+  while dir and not seen[dir] do
+    seen[dir] = true
+    if is_project_marker(dir) then
+      return dir
+    end
+    dir = parent_dir(dir)
+  end
+  return nil
+end
+
+--- Resolve the stable project directory used as cwd for CLI calls.
+--- Order:
+--- 1. setup `root` string or function (if non-empty)
+--- 2. walk up from current buffer file directory (named file on disk)
+--- 3. walk up from Neovim cwd
+--- 4. Neovim cwd
+---@param bufnr integer|nil
+---@return string
+function M.resolve_root(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  local override = config.root
+  if type(override) == "function" then
+    local ok, value = pcall(override)
+    if ok and type(value) == "string" and vim.trim(value) ~= "" then
+      return normalize_dir(value) or value
+    end
+  elseif type(override) == "string" and vim.trim(override) ~= "" then
+    return normalize_dir(override) or override
+  end
+
+  local start_dir = nil
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if name ~= "" and path_exists(name) then
+    start_dir = vim.fn.fnamemodify(name, ":p:h")
+  end
+
+  local found = M.find_project_root(start_dir)
+  if found then
+    return found
+  end
+
+  local cwd = vim.fn.getcwd()
+  found = M.find_project_root(cwd)
+  if found then
+    return found
+  end
+
+  return normalize_dir(cwd) or cwd
+end
+
+--- When `<root>/.dbx/config.yaml` exists, return that path for --config.
+---@param root string|nil
+---@return string|nil
+function M.project_config_path(root)
+  root = normalize_dir(root)
+  if not root then
+    return nil
+  end
+  local path = root .. "/.dbx/config.yaml"
+  if path_exists(path) then
+    return path
+  end
+  return nil
+end
+
+--- Subcommands that accept --config (others only need stable cwd).
+local config_flag_commands = {
+  query = true,
+  ddl = true,
+  danger = true,
+}
+
+--- Insert `--config <path>` after the subcommand when supported, a project
+--- config is found, and argv does not already include --config.
+---@param argv string[]
+---@param config_path string|nil
+---@return string[]
+local function with_config_flag(argv, config_path)
+  if not config_path or config_path == "" then
+    return argv
+  end
+  local sub = argv[1]
+  if not sub or not config_flag_commands[sub] then
+    return argv
+  end
+  for _, arg in ipairs(argv) do
+    if arg == "--config" then
+      return argv
+    end
+  end
+
+  local out = {}
+  for i, arg in ipairs(argv) do
+    out[#out + 1] = arg
+    -- Place after the subcommand (first token) so flag parsers accept it.
+    if i == 1 then
+      out[#out + 1] = "--config"
+      out[#out + 1] = config_path
+    end
+  end
+  return out
+end
+
 local function run(argv, opts)
   opts = opts or {}
   local executable = config.executable
@@ -56,9 +209,13 @@ local function run(argv, opts)
     return
   end
 
+  local root = M.resolve_root()
+  local config_path = M.project_config_path(root)
+  local final_argv = with_config_flag(argv, config_path)
+
   local command = { executable }
-  vim.list_extend(command, argv)
-  vim.system(command, { stdin = opts.stdin, text = true }, function(result)
+  vim.list_extend(command, final_argv)
+  vim.system(command, { cwd = root, stdin = opts.stdin, text = true }, function(result)
     vim.schedule(function()
       if result.code ~= 0 then
         local detail = vim.trim(result.stderr or "")
@@ -217,6 +374,14 @@ function M.setup(opts)
   end
   if opts.connection ~= nil then
     config.connection = opts.connection
+  end
+  if opts.root ~= nil then
+    -- Allow clearing override with false/empty; keep only string or function.
+    if opts.root == false or opts.root == "" then
+      config.root = nil
+    else
+      config.root = opts.root
+    end
   end
   register_commands()
 end
