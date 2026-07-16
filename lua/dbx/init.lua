@@ -247,6 +247,77 @@ local function connection(override)
 end
 
 local sql = require("dbx.sql")
+local complete = require("dbx.complete")
+
+--- Synchronous CLI capture for completion (never blocks the UI long: snapshot list is local).
+---@param argv string[]
+---@return string|nil stdout
+local function run_sync_stdout(argv)
+  local executable = config.executable
+  if not executable_available(executable) then
+    return nil
+  end
+  local root = M.resolve_root()
+  local command = { executable }
+  vim.list_extend(command, argv)
+  local ok, result = pcall(function()
+    return vim.system(command, { cwd = root, text = true }):wait()
+  end)
+  if not ok or not result or result.code ~= 0 then
+    return nil
+  end
+  return result.stdout
+end
+
+--- Snapshot names from `dbx snapshot list` under the resolved project root.
+---@return string[]
+local function snapshot_names()
+  local stdout = run_sync_stdout({ "snapshot", "list" })
+  return complete.parse_snapshot_list(stdout)
+end
+
+--- Connection names from the project (or discovered) config YAML.
+---@return string[]
+local function connection_names()
+  local root = M.resolve_root()
+  local config_path = M.project_config_path(root)
+  if not config_path then
+    -- Fall back to discovery paths the CLI would use under root cwd.
+    local candidates = {
+      root .. "/.dbx/config.yaml",
+    }
+    local xdg = vim.env.XDG_CONFIG_HOME
+    if xdg and xdg ~= "" then
+      candidates[#candidates + 1] = xdg .. "/dbx/config.yaml"
+    end
+    local home = vim.env.HOME or vim.fn.expand("~")
+    if home and home ~= "" then
+      candidates[#candidates + 1] = home .. "/.config/dbx/config.yaml"
+    end
+    for _, path in ipairs(candidates) do
+      if path_exists(path) then
+        config_path = path
+        break
+      end
+    end
+  end
+  if not config_path or not path_exists(config_path) then
+    return {}
+  end
+  local ok, lines = pcall(vim.fn.readfile, config_path)
+  if not ok or type(lines) ~= "table" then
+    return {}
+  end
+  return complete.parse_connection_names(table.concat(lines, "\n"))
+end
+
+local function complete_connections(arglead, _cmdline, _cursorpos)
+  return complete.filter_prefix(connection_names(), arglead)
+end
+
+local function complete_snapshots(arglead, _cmdline, _cursorpos)
+  return complete.filter_prefix(snapshot_names(), arglead)
+end
 
 local function buffer_text(bufnr)
   return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
@@ -309,7 +380,12 @@ local function register_commands()
       return
     end
     run({ "query", "--conn", conn }, { stdin = source, kind = "query", filetype = "json" })
-  end, { nargs = "?", range = true, desc = "Ejecuta SQL de inspección con dbx" })
+  end, {
+    nargs = "?",
+    range = true,
+    complete = complete_connections,
+    desc = "Ejecuta SQL de inspección con dbx",
+  })
 
   vim.api.nvim_create_user_command("DbDDL", function(opts)
     local conn = connection()
@@ -335,7 +411,11 @@ local function register_commands()
         notify("Snapshot guardado en " .. vim.trim(stdout), vim.log.levels.INFO)
       end,
     })
-  end, { nargs = "?", desc = "Guarda el último resultado como snapshot" })
+  end, {
+    nargs = "?",
+    complete = complete_snapshots,
+    desc = "Guarda el último resultado como snapshot",
+  })
 
   vim.api.nvim_create_user_command("DbDiff", function(opts)
     if #opts.fargs ~= 2 then
@@ -343,7 +423,11 @@ local function register_commands()
       return
     end
     run({ "diff", opts.fargs[1], opts.fargs[2] }, { kind = "diff", filetype = "diff" })
-  end, { nargs = "+", desc = "Compara dos snapshots" })
+  end, {
+    nargs = "+",
+    complete = complete_snapshots,
+    desc = "Compara dos snapshots",
+  })
 
   vim.api.nvim_create_user_command("DbPath", function(opts)
     if #opts.fargs < 1 or #opts.fargs > 2 then
@@ -357,7 +441,11 @@ local function register_commands()
       table.insert(argv, opts.fargs[1])
     end
     run(argv, { kind = "path", filetype = "json" })
-  end, { nargs = "+", desc = "Filtra el último resultado o un snapshot" })
+  end, {
+    nargs = "+",
+    complete = complete_snapshots,
+    desc = "Filtra el último resultado o un snapshot",
+  })
 
   vim.api.nvim_create_user_command("DbDanger", function(opts)
     local conn = connection()
