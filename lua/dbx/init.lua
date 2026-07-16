@@ -789,6 +789,26 @@ local function merge_table(base, incoming)
   return out
 end
 
+--- Deep-merge `incoming` into `base`, returning a fresh table; only known keys
+--- (or any scalar sub-key if `base` had it) get replaced. We keep things
+--- minimal here: each leaf field is replaced wholesale.
+---@param base table
+---@param incoming table|nil
+---@return table
+local function merge_table(base, incoming)
+  local out = {}
+  for k, v in pairs(base) do
+    out[k] = v
+  end
+  if type(incoming) ~= "table" then
+    return out
+  end
+  for k, v in pairs(incoming) do
+    out[k] = v
+  end
+  return out
+end
+
 function M.setup(opts)
   opts = opts or {}
   if opts.executable ~= nil then
