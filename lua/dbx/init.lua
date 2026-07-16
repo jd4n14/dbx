@@ -5,6 +5,11 @@ local config = {
   connection = nil,
   ---@type string|fun():string|nil
   root = nil,
+  -- Run `dbx danger` on the same SQL before `:DbRun` proceeds.
+  -- safe   → silent proceed
+  -- warning→ notify WARN, proceed
+  -- critical → notify ERROR; restricted_environment_write finding also blocks
+  danger_preflight = true,
   ---@type boolean|table
   -- false/nil: no keymaps; true: default leader maps; table: explicit lhs overrides.
   mappings = false,
@@ -323,6 +328,130 @@ function M.current_connection()
   return value
 end
 
+--- Parse a danger envelope from CLI stdout. Returns nil on bad JSON.
+---@param stdout string
+---@return table|nil
+local function decode_danger(stdout)
+  if not stdout or stdout == "" then
+    return nil
+  end
+  local ok, parsed = pcall(vim.json.decode, stdout)
+  if not ok or type(parsed) ~= "table" then
+    return nil
+  end
+  return parsed
+end
+
+--- Reduce a danger envelope to a flat list of finding codes.
+---@param result table
+---@return string[]
+local function finding_codes(result)
+  local codes = {}
+  for _, f in ipairs(result.findings or {}) do
+    if type(f) == "table" and type(f.code) == "string" then
+      codes[#codes + 1] = f.code
+    end
+  end
+  return codes
+end
+
+--- True when the envelope carries the env-based write block.
+local function has_env_write_block(codes)
+  for _, c in ipairs(codes) do
+    if c == "restricted_environment_write" then
+      return true
+    end
+  end
+  return false
+end
+
+--- Translate a danger envelope into a notify + proceed/block decision. Pure:
+--- never touches IO or vim.system.
+---@param result table
+---@return { proceed: boolean, block: boolean }
+local function decide_danger(result)
+  if type(result) ~= "table" then
+    return { proceed = true, block = false }
+  end
+  local severity = result.severity
+  if severity == "safe" or result.safe == true then
+    return { proceed = true, block = false }
+  end
+  local codes = finding_codes(result)
+  local list = #codes > 0 and table.concat(codes, ", ") or "(sin códigos)"
+  if severity == "warning" then
+    notify("SQL con advertencias antes de ejecutar: " .. list, vim.log.levels.WARN)
+    return { proceed = true, block = false }
+  end
+  if severity == "critical" then
+    if has_env_write_block(codes) then
+      notify(
+        "Ejecución bloqueada: SQL crítico en entorno prod/readonly ("
+          .. list
+          .. "). Cambia de conexión, desactiva danger_preflight o ejecuta DbDanger manualmente.",
+        vim.log.levels.ERROR
+      )
+      return { proceed = false, block = true }
+    end
+    notify(
+      "SQL crítico detectado antes de ejecutar: "
+        .. list
+        .. ". Para omitir el aviso, usa setup({ danger_preflight = false }).",
+      vim.log.levels.ERROR
+    )
+    return { proceed = true, block = false }
+  end
+  -- Unknown severity: never block on speculation.
+  return { proceed = true, block = false }
+end
+
+--- Run `dbx danger --conn <conn>` on `source` and route the decision to
+--- `on_decision`. Preflight never silently blocks: when the CLI errors or
+--- returns bad JSON we proceed with an INFO notification so existing setups
+--- keep working.
+---@param source string
+---@param conn string
+---@param on_decision fun(decision: { proceed: boolean, block: boolean })
+local function preflight_danger(source, conn, on_decision)
+  if not config.danger_preflight then
+    on_decision({ proceed = true, block = false })
+    return
+  end
+  local executable = config.executable
+  if not executable_available(executable) then
+    on_decision({ proceed = true, block = false })
+    return
+  end
+
+  local root = M.resolve_root()
+  local config_path = M.project_config_path(root)
+  local argv = { "danger", "--conn", conn }
+  local final_argv = with_config_flag(argv, config_path)
+
+  local command = { executable }
+  vim.list_extend(command, final_argv)
+  vim.system(command, { cwd = root, stdin = source, text = true }, function(result)
+    vim.schedule(function()
+      if result.code ~= 0 then
+        local detail = vim.trim(result.stderr or "")
+        if detail == "" then
+          detail = "el proceso terminó con código " .. result.code
+        end
+        notify("Preflight danger omitido: " .. detail, vim.log.levels.INFO)
+        on_decision({ proceed = true, block = false })
+        return
+      end
+      local parsed = decode_danger(result.stdout)
+      if not parsed then
+        notify("Preflight danger: respuesta no válida del CLI, se omite", vim.log.levels.INFO)
+        on_decision({ proceed = true, block = false })
+        return
+      end
+      on_decision(decide_danger(parsed))
+    end)
+  end)
+end
+
 local sql = require("dbx.sql")
 local complete = require("dbx.complete")
 
@@ -456,7 +585,12 @@ local function register_commands()
     if source == nil then
       return
     end
-    run({ "query", "--conn", conn }, { stdin = source, kind = "query", filetype = "json" })
+    preflight_danger(source, conn, function(decision)
+      if not decision.proceed then
+        return
+      end
+      run({ "query", "--conn", conn }, { stdin = source, kind = "query", filetype = "json" })
+    end)
   end, {
     nargs = "?",
     range = true,
@@ -677,6 +811,9 @@ function M.setup(opts)
   end
   if opts.result ~= nil then
     config.result = merge_table(config.result, opts.result)
+  end
+  if opts.danger_preflight ~= nil then
+    config.danger_preflight = opts.danger_preflight and true or false
   end
   register_commands()
   register_keymaps(config.mappings)

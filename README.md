@@ -190,13 +190,25 @@ de resultado (reutilizados por `kind` para no apilar splits):
 Los buffers de resultado se etiquetan con `vim.b.dbx_result = <kind>` para
 identificarlos desde otros plugins o statuslines.
 
+Opcionalmente `setup({ danger_preflight = false })` desactiva el análisis
+preventivo de `:DbRun` (ver más abajo). Por defecto está activo.
+
 Las credenciales permanecen en la configuración de dbx; el plugin no las copia
 ni las conserva en Lua. Los comandos disponibles son:
 
 - `:DbRun [connection]`: ejecuta la selección/rango visual o, sin rango, el
   statement bajo el cursor (separado por `;` de nivel superior). El argumento
   opcional sustituye la conexión solo para esa llamada. Completa nombres de
-  conexión del YAML de dbx.
+  conexión del YAML de dbx. Antes de ejecutar se pasa el SQL por
+  `dbx danger --conn <conexión>` (mismo input, mismas flags) y la severidad
+  decide el siguiente paso:
+  - `safe` → silencio.
+  - `warning` → notificación WARN, se ejecuta igual.
+  - `critical` → notificación ERROR. Si el envelope incluye el finding
+    `restricted_environment_write` (escritura contra `prod`/`readonly`), la
+    ejecución se bloquea; en otro caso, se ejecuta igual. Para omitir el
+    aviso en una llamada desactiva el preflight con
+    `setup({ danger_preflight = false })`.
 - `:DbConn [connection]`: fija la conexión activa de la sesión (tiene prioridad
   sobre `setup.connection`) o, sin argumentos, muestra la conexión actual.
   Completa nombres de conexión del YAML.
