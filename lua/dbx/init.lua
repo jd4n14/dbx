@@ -525,6 +525,72 @@ local function complete_snapshots(arglead, _cmdline, _cursorpos)
   return complete.filter_prefix(snapshot_names(), arglead)
 end
 
+--- Parse `dbx history list --json` (one JSON object per line) into a list.
+---@param stdout string|nil
+---@return table[]
+local function parse_history_list(stdout)
+  local out = {}
+  if not stdout or stdout == "" then
+    return out
+  end
+  for line in stdout:gmatch("[^\r\n]+") do
+    if line ~= "" then
+      local ok, decoded = pcall(vim.fn.json_decode, line)
+      if ok and type(decoded) == "table" then
+        out[#out + 1] = decoded
+      end
+    end
+  end
+  return out
+end
+
+--- Read the parsed history listing from the CLI under the project root.
+---@return table[]
+local function history_entries()
+  local stdout = run_sync_stdout({ "history", "list", "--limit", "50", "--json" })
+  return parse_history_list(stdout)
+end
+
+--- Return the newest history entry (entry[1] in CLI output) or nil.
+---@return table|nil
+local function newest_history_entry()
+  local entries = history_entries()
+  if #entries == 0 then
+    return nil
+  end
+  return entries[1]
+end
+
+--- Completion function returning the list of available history indexes.
+local function complete_history_indexes(arglead, _cmdline, _cursorpos)
+  local items = {}
+  for _, e in ipairs(history_entries()) do
+    if e.index then
+      items[#items + 1] = tostring(e.index)
+    end
+  end
+  return complete.filter_prefix(items, arglead)
+end
+
+--- Render JSONL history into a tabular buffer (one line per entry) using the
+--- shared result_buffer scratch buffer with filetype=tsv.
+---@param stdout string
+local function render_history(stdout)
+  local entries = parse_history_list(stdout)
+  if #entries == 0 then
+    notify("No hay historial todavía", vim.log.levels.INFO)
+    return
+  end
+  local lines = { "idx\twhen\tconnection\tsql" }
+  for _, e in ipairs(entries) do
+    local ts = e.ts or ""
+    local conn_name = e.connection or ""
+    local sql = (e.sql or ""):gsub("\r?\n", " "):gsub("\t", " ")
+    table.insert(lines, string.format("%d\t%s\t%s\t%s", e.index or 0, ts, conn_name, sql))
+  end
+  result_buffer("history", "tsv", table.concat(lines, "\n"))
+end
+
 local function buffer_text(bufnr)
   return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
 end
@@ -683,6 +749,38 @@ local function register_commands()
     complete = complete_connections,
     desc = "Cambia o muestra la conexión activa de la sesión",
   })
+
+  vim.api.nvim_create_user_command("DbHistory", function(opts)
+    -- Renders recent history in a fresh 'history' result buffer. JSON is the
+    -- transport so we can parse columns robustly without TTY columns.
+    run({ "history", "list", "--json" }, {
+      kind = "history",
+      filetype = "tsv",
+      on_success = function(stdout)
+        render_history(stdout)
+      end,
+    })
+  end, { nargs = 0, desc = "Muestra el historial reciente de queries ejecutados" })
+
+  vim.api.nvim_create_user_command("DbHistoryLast", function(opts)
+    -- Re-run the most recent successful query: re-uses :DbRun's connection
+    -- resolution + rendering so behavior stays consistent with a fresh run.
+    local entry = newest_history_entry()
+    if entry == nil then
+      notify("No hay historial todavía", vim.log.levels.INFO)
+      return
+    end
+    local conn = entry.connection or ""
+    if conn == "" then
+      notify("La entrada de historial no tiene conexión; no se puede re-ejecutar")
+      return
+    end
+    run({ "query", "--conn", conn }, {
+      stdin = entry.sql or "",
+      kind = "query",
+      filetype = "json",
+    })
+  end, { nargs = 0, desc = "Re-ejecuta el último query exitoso del historial" })
 end
 
 local function clear_dbx_keymaps()
@@ -767,26 +865,6 @@ local function register_keymaps(mappings)
       vim.cmd("DbSnapshot " .. name)
     end, "snapshot prompt")
   end
-end
-
---- Deep-merge `incoming` into `base`, returning a fresh table; only known keys
---- (or any scalar sub-key if `base` had it) get replaced. We keep things
---- minimal here: each leaf field is replaced wholesale.
----@param base table
----@param incoming table|nil
----@return table
-local function merge_table(base, incoming)
-  local out = {}
-  for k, v in pairs(base) do
-    out[k] = v
-  end
-  if type(incoming) ~= "table" then
-    return out
-  end
-  for k, v in pairs(incoming) do
-    out[k] = v
-  end
-  return out
 end
 
 --- Deep-merge `incoming` into `base`, returning a fresh table; only known keys

@@ -224,6 +224,11 @@ ni las conserva en Lua. Los comandos disponibles son:
   primer argumento opcional.
 - `:DbDanger`: analiza la selección/rango visual o todo el buffer y abre el
   envelope consultivo en un buffer `json`; nunca se ejecuta automáticamente.
+- `:DbHistory`: lista los últimos queries exitosos (índice, fecha, conexión y
+  SQL abreviado) en un buffer tabular `tsv`. Lee `dbx history list --json`.
+- `:DbHistoryLast`: re-ejecuta el query más reciente del historial usando la
+  conexión con la que se ejecutó originalmente. Útil después de editar el
+  código que arma el SQL y querer re-correrlo sin re-armar la query.
 
 Keymaps son **opt-in** (no se imponen defaults agresivos):
 
@@ -297,6 +302,25 @@ comando exclusivamente local: no construye un DSN, no abre MySQL y tanto un
 resultado seguro como uno peligroso terminan con exit `0`. Flags inválidos,
 config o conexión inválida y SQL vacío terminan con exit distinto de cero,
 mensaje en stderr y stdout vacío.
+
+### Historial ligero (`dbx history`)
+
+Cada `dbx query` exitoso añade una entrada JSON a `.dbx/history.jsonl` bajo el
+project root (`cwd`). El archivo está capeado a `history.DefaultLimit` (100 por
+defecto); cuando se supera, las entradas más viejas se descartan en una
+reescritura atómica. Permisos: `0o700` en `.dbx/`, `0o600` en `history.jsonl`.
+
+Subcomandos CLI:
+
+```bash
+dbx history list [--limit N] [--json]   # N por defecto 50; --json emite JSON Lines
+dbx history show <index> [--json]       # 1 = más reciente; --json emite registro completo
+dbx history run <index>                 # alias de show (pensado para pipe a dbx query)
+dbx history clear                       # borra el archivo de historial
+```
+
+Fallo al anexar al historial nunca rompe la query: se imprime un `warn` por
+`stderr` y se devuelve el resultado normal.
 
 ```bash
 echo 'SELECT * FROM orders' | dbx danger

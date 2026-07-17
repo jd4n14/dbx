@@ -31,6 +31,8 @@ func run(args []string) error {
 		return runPath(args[1:])
 	case "danger":
 		return runDanger(args[1:])
+	case "history":
+		return runHistory(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("dbx 0.0.1")
 		return nil
@@ -56,6 +58,7 @@ Commands:
   diff       Structured JSON diff between two snapshots
   path       Apply a path/JSONPath over a result or snapshot
   danger     Analyze SQL for dangerous statements
+  history    List / show / clear recent successful dbx query runs
   version    Print version
   help       Show this help
 
@@ -68,5 +71,8 @@ Examples:
   dbx diff before_split_order after_split_order
   dbx path --snapshot before_split_order 'metadata.fulfillment.status'
   dbx danger < query.sql
+  dbx history list --limit 20 --json
+  dbx history show 1
+  dbx history clear
 `)
 }
