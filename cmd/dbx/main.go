@@ -23,6 +23,10 @@ func run(args []string) error {
 		return runQuery(args[1:])
 	case "ddl":
 		return runDDL(args[1:])
+	case "tables":
+		return runTables(args[1:])
+	case "columns":
+		return runColumns(args[1:])
 	case "snapshot":
 		return runSnapshot(args[1:])
 	case "diff":
@@ -54,6 +58,8 @@ Usage:
 Commands:
   query      Execute SQL from stdin, print JSON rows to stdout
   ddl        Fetch CREATE TABLE DDL for a table
+  tables     List tables (SHOW TABLES) for the connection [optional --schema, --like]
+  columns    List columns (SHOW COLUMNS) for a table [optional --like]
   snapshot   Save current/last result as a named snapshot
   diff       Structured JSON diff between two snapshots
   path       Apply a path/JSONPath over a result or snapshot
@@ -65,6 +71,10 @@ Commands:
 Examples:
   dbx query --conn local_wms < query.sql
   dbx ddl --conn local_wms --table orders
+  dbx tables --conn local_wms --like ord
+  dbx tables --conn local_wms --schema audit --json
+  dbx columns --conn local_wms --table orders
+  dbx columns --conn local_wms --table orders --json
   dbx snapshot --name before_split_order
   dbx snapshot list
   dbx snapshot show before_split_order

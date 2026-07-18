@@ -8,7 +8,7 @@ local function assert_equal(expected, actual, message)
   end
 end
 
-local commands = { "DbRun", "DbDDL", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn" }
+local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn" }
 for _, name in ipairs(commands) do
   assert(vim.fn.exists(":" .. name) == 2, name .. " is not registered")
 end
@@ -21,6 +21,44 @@ assert_equal(
   "parse_snapshot_list should take the name column"
 )
 assert_equal({}, complete.parse_snapshot_list(""), "empty snapshot list")
+
+-- Schema browser parsers: schema-browser coverage without invoking the CLI.
+assert_equal(
+  { "orders", "order_items", "shipments" },
+  complete.parse_tables_list("orders\norder_items\nshipments\n"),
+  "parse_tables_list should split on newlines"
+)
+assert_equal(
+  { "orders", "order_items", "shipments" },
+  complete.parse_tables_list("\n  orders  \n\norder_items\n\nshipments\n"),
+  "parse_tables_list should trim and skip blanks"
+)
+assert_equal(
+  { "orders", "order_items", "shipments" },
+  complete.parse_tables_list('[\n  "orders",\n  "order_items",\n  "shipments"\n]\n'),
+  "parse_tables_list should handle JSON arrays"
+)
+assert_equal({}, complete.parse_tables_list(""), "empty tables list")
+assert_equal(
+  { "id", "status", "created_at" },
+  complete.parse_columns_list("field\ttype\tnull\tkey\tdefault\textra\nid\tbigint\tNO\tPRI\t\tauto_increment\nstatus\tvarchar\tNO\t\tpending\t\ncreated_at\tdatetime\tNO\t\tcurrent_timestamp\tDEFAULT_GENERATED\n"),
+  "parse_columns_list should drop the TSV header and return column names"
+)
+assert_equal(
+  { "id", "status" },
+  complete.parse_columns_list('[{"field":"id","type":"bigint"},{"field":"status","type":"varchar"}]'),
+  "parse_columns_list should handle JSON arrays"
+)
+assert_equal(
+  {},
+  complete.parse_columns_list(""),
+  "empty columns list"
+)
+assert_equal(
+  { "orders", "order_items", "orders_audit" },
+  complete.filter_prefix({ "orders", "order_items", "orders_audit" }, "ord"),
+  "filter_prefix should match prefix across the supplied list"
+)
 assert_equal(
   { "local_wms", "prod_ro" },
   complete.parse_connection_names(table.concat({
@@ -751,6 +789,193 @@ assert(
 -- Restore default setup so the file is left in a clean state for the final
 -- cleanup pass. (Smoke test ends with qa!; failure would happen earlier.)
 require("dbx").setup({ executable = fake, connection = "local_wms", root = ux })
+
+-- Schema browser + SQL omnifunc: fake CLI serves tables / columns JSON
+-- so :DbTables, :DbColumns and the omnifunc can be exercised offline.
+local schema_project = tmp .. "/schema-project"
+vim.fn.mkdir(schema_project, "p")
+local schema_fake = tmp .. "/schema-fake-dbx"
+-- Long-form shell [==[ ... ]==] to keep tabs/backslashes untouched.
+local schema_script = [==[
+#!/bin/sh
+printf "cwd=%s\n" "$(pwd)" >> "$DBX_TEST_LOG"
+printf "%s\n" "$*" >> "$DBX_TEST_LOG"
+case "$1" in
+  tables)
+    as_json=0
+    saw_like=0
+    prev=""
+    for arg in "$@"; do
+      if [ "$arg" = "--json" ]; then
+        as_json=1
+      fi
+      if [ "$prev" = "--like" ]; then
+        saw_like=1
+      fi
+      prev="$arg"
+    done
+    if [ "$as_json" = "1" ] && [ "$saw_like" = "1" ]; then
+      printf '%s\n' '["orders_partial"]'
+      exit 0
+    fi
+    if [ "$as_json" = "1" ]; then
+      printf '%s\n' '["orders","order_items","shipments"]'
+      exit 0
+    fi
+    if [ "$saw_like" = "1" ]; then
+      printf '%s\n' orders_partial
+      exit 0
+    fi
+    printf '%s\n' orders
+    printf '%s\n' order_items
+    printf '%s\n' shipments
+    exit 0
+    ;;
+  columns)
+    saw_json=0
+    prev=""
+    for arg in "$@"; do
+      if [ "$arg" = "--json" ]; then
+        saw_json=1
+      fi
+      prev="$arg"
+    done
+    case "$5" in
+      orders)
+        if [ "$saw_json" = "1" ]; then
+          printf '%s\n' '[{"field":"id","type":"bigint"},{"field":"status","type":"varchar"},{"field":"created_at","type":"datetime"}]'
+        else
+          printf 'field\ttype\tnull\tkey\tdefault\textra\n'
+          printf 'id\tbigint\tNO\tPRI\t\tauto_increment\n'
+          printf 'status\tvarchar\tNO\t\tpending\t\n'
+          printf 'created_at\tdatetime\tNO\t\tcurrent_timestamp\tDEFAULT_GENERATED\n'
+        fi
+        ;;
+      order_items)
+        if [ "$saw_json" = "1" ]; then
+          printf '%s\n' '[{"field":"order_id"},{"field":"sku"}]'
+        else
+          printf 'field\ttype\n'
+          printf 'order_id\tbigint\n'
+          printf 'sku\tvarchar\n'
+        fi
+        ;;
+      *)
+        if [ "$saw_json" = "1" ]; then
+          printf '%s\n' '[]'
+        else
+          printf 'field\ttype\n'
+        fi
+        ;;
+    esac
+    exit 0
+    ;;
+  *) printf '%s\n' fallthrough ;;
+esac
+]==]
+vim.fn.writefile(vim.split(schema_script, "\n", { plain = true }), schema_fake)
+vim.fn.setfperm(schema_fake, "rwx------")
+
+require("dbx").setup({
+  executable = schema_fake,
+  connection = "local_wms",
+  root = schema_project,
+})
+vim.cmd("DbConn local_wms")
+clear_log()
+
+-- :DbTables with no arg invokes the CLI without --like and fills a tsv buffer.
+vim.cmd("DbTables")
+wait_for("tables --conn local_wms")
+assert(not log_text():find("tables --conn local_wms --like", 1, true), "DbTables without arg must not pass --like")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("tables")), "DbTables result buffer must exist")
+assert_equal("tables", vim.b[result_bufnr("tables")].dbx_result, "DbTables buffer must be tagged")
+local tables_lines = vim.api.nvim_buf_get_lines(result_bufnr("tables"), 0, -1, false)
+assert_equal(
+  { "orders", "order_items", "shipments" },
+  tables_lines,
+  "DbTables should render table names per line (one per row)"
+)
+close_all_windows()
+
+-- :DbTables ord uses --like to scope the CLI call.
+clear_log()
+vim.cmd("DbTables ord")
+wait_for("tables --conn local_wms --like ord")
+assert_log_contains("tables --conn local_wms --like ord", "DbTables <arg> should forward --like")
+close_all_windows()
+
+-- :DbColumns orders fetches the column list and tags the buffer as 'columns'.
+clear_log()
+vim.cmd("DbColumns orders")
+wait_for("columns --conn local_wms --table orders")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("columns")), "DbColumns result buffer must exist")
+assert_equal("columns", vim.b[result_bufnr("columns")].dbx_result, "DbColumns buffer must be tagged")
+local columns_lines = vim.api.nvim_buf_get_lines(result_bufnr("columns"), 0, -1, false)
+-- The result buffer is the raw TSV stdout; the header line plus three rows.
+assert(#columns_lines == 4, "DbColumns buffer should have header + 3 rows, got " .. #columns_lines)
+assert(columns_lines[1]:match("^field\t"), "DbColumns header must start with field\\t")
+assert(columns_lines[2]:match("^id\t"), "DbColumns row 2 should be id")
+assert(columns_lines[3]:match("^status\t"), "DbColumns row 3 should be status")
+assert(columns_lines[4]:match("^created_at\t"), "DbColumns row 4 should be created_at")
+close_all_windows()
+
+-- :DbColumns without args falls back to the word under the cursor.
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1 from orders where 1=1;" })
+vim.api.nvim_win_set_cursor(0, { 1, 18 }) -- on 'orders' under cursor
+clear_log()
+vim.cmd("DbColumns")
+wait_for("columns --conn local_wms --table orders")
+assert_log_contains("--table orders", "DbColumns without arg should default to <cword>")
+close_all_windows()
+
+-- Tables completion: stub omnifunc not needed; cmdline completion uses the
+-- cached table list (which round-trips through the fake CLI the first time).
+close_extra_windows()
+require("dbx").setup({ executable = schema_fake, connection = "local_wms", root = schema_project })
+local all_tables = vim.fn.getcompletion("DbTables ", "cmdline")
+table.sort(all_tables)
+assert_equal({ "order_items", "orders", "shipments" }, all_tables, "DbTables completion should list tables from the fake CLI")
+
+-- Omnifunc: SQL buffer with no FROM yet suggests table names.
+close_extra_windows()
+require("dbx").setup({ executable = schema_fake, connection = "local_wms", root = schema_project })
+vim.cmd.enew()
+vim.bo.filetype = "sql"
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+vim.api.nvim_win_set_cursor(0, { 1, 1 })
+local omnifunc = require("dbx").omnifunc
+local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+local start = omnifunc(1)
+assert(type(start) == "number", "omnifunc(1) must return a byte offset")
+local items = omnifunc(0)
+table.sort(items)
+assert_equal({ "order_items", "orders", "shipments" }, items, "omnifunc(0) without FROM should suggest tables")
+
+-- Omnifunc with `from orders` should suggest columns of orders.
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select ", "from orders " })
+vim.api.nvim_win_set_cursor(0, { 2, 12 })
+items = omnifunc(0)
+table.sort(items)
+assert_equal({ "created_at", "id", "status" }, items, "omnifunc(0) with FROM should suggest columns of the named table")
+close_extra_windows()
+
+-- Omnifunc opt-out: setup({ sql_omnifunc = false }) must not install the
+-- omnifunc on a fresh SQL buffer.
+require("dbx").setup({
+  executable = schema_fake,
+  connection = "local_wms",
+  root = schema_project,
+  sql_omnifunc = false,
+})
+vim.cmd.enew()
+vim.bo.filetype = "sql"
+assert_equal("", vim.bo.omnifunc, "sql_omnifunc=false must not install the omnifunc on new SQL buffers")
+close_extra_windows()
+
+-- Final default setup so any leftover work is in a known state.
+require("dbx").setup({ executable = fake, connection = "local_wms", root = false })
 
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")

@@ -48,6 +48,93 @@ function M.parse_snapshot_list(stdout)
   return names
 end
 
+--- Parse `dbx tables` text stdout into table names.
+--- Default stdout is one table name per line. Blank lines and surrounding
+--- whitespace are ignored. The optional `--json` form (a JSON array of
+--- strings) is also accepted.
+---@param stdout string|nil
+---@return string[]
+function M.parse_tables_list(stdout)
+  local names = {}
+  if not stdout or stdout == "" then
+    return names
+  end
+
+  -- Detect a JSON array (the --json form): single non-empty line starting
+  -- with `[`. Fall through to line parsing otherwise.
+  local trimmed = stdout:gsub("^%s+", ""):gsub("%s+$", "")
+  if trimmed:sub(1, 1) == "[" then
+    local ok, decoded = pcall(vim.json.decode, trimmed)
+    if ok and type(decoded) == "table" then
+      for _, v in ipairs(decoded) do
+        if type(v) == "string" and v ~= "" then
+          names[#names + 1] = v
+        end
+      end
+      return names
+    end
+  end
+
+  for line in stdout:gmatch("[^\r\n]+") do
+    local cleaned = line:match("^%s*(.-)%s*$")
+    if cleaned and cleaned ~= "" then
+      names[#names + 1] = cleaned
+    end
+  end
+  return names
+end
+
+--- Parse `dbx columns <table>` output into a flat list of column names.
+--- Accepts the default TSV form (header `field\ttype\tnull\tkey\tdefault\textra`
+--- followed by one row per column) or the `--json` form (array of objects
+--- with a `field` key). The `default_table` argument is unused; it lets
+--- callers anchor completions to a specific table when re-using this helper
+--- for omnifunc context (kept so the API mirrors `parse_tables_list`).
+---@param stdout string|nil
+---@param default_table string|nil
+---@return string[]
+function M.parse_columns_list(stdout, default_table)
+  _ = default_table -- accepted for API symmetry; not used here.
+  local columns = {}
+  if not stdout or stdout == "" then
+    return columns
+  end
+
+  local trimmed = stdout:gsub("^%s+", ""):gsub("%s+$", "")
+  if trimmed:sub(1, 1) == "[" then
+    local ok, decoded = pcall(vim.json.decode, trimmed)
+    if ok and type(decoded) == "table" then
+      for _, v in ipairs(decoded) do
+        if type(v) == "table" and type(v.field) == "string" and v.field ~= "" then
+          columns[#columns + 1] = v.field
+        end
+      end
+      return columns
+    end
+  end
+
+  local first = true
+  for line in stdout:gmatch("[^\r\n]+") do
+    if first then
+      first = false
+      -- Skip the TSV header (first cell must equal "field").
+      local first_cell = line:match("^([^\t]+)") or ""
+      if first_cell:match("^%s*field%s*$") then
+        goto continue
+      end
+    end
+    local col = line:match("^([^\t]+)")
+    if col then
+      col = col:match("^%s*(.-)%s*$") or col
+      if col ~= "" then
+        columns[#columns + 1] = col
+      end
+    end
+    ::continue::
+  end
+  return columns
+end
+
 --- Extract top-level connection names from a dbx YAML config body.
 --- Only understands the common map form under `connections:`; ignores flow `{}`
 --- and nested keys deeper than the first indent level of the map.

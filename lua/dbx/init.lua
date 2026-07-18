@@ -10,6 +10,9 @@ local config = {
   -- warning→ notify WARN, proceed
   -- critical → notify ERROR; restricted_environment_write finding also blocks
   danger_preflight = true,
+  -- Install the SQL omnifunc (`v:lua.require'dbx'.omnifunc`) on SQL buffers
+  -- via a FileType autocmd. Default ON; opt out with `setup({ sql_omnifunc = false })`.
+  sql_omnifunc = true,
   ---@type boolean|table
   -- false/nil: no keymaps; true: default leader maps; table: explicit lhs overrides.
   mappings = false,
@@ -25,6 +28,17 @@ local config = {
 
 -- Session connection override set by :DbConn (takes precedence over setup.connection).
 local session_connection = nil
+
+-- Tracks the FileType autocmd id installed by setup so re-entrant setup
+-- calls replace it instead of stacking duplicates.
+local sql_omnifunc_autocmd_id = nil
+
+-- Session-bound caches for completion helpers. keyBy("conn", ts) refreshes
+-- every 60 seconds so typing 60+ chars/min worst case still gets fresh data
+-- without re-issuing a CLI sync on every keystroke.
+---@type table<string, { fetched_at: number, names: string[] }>
+local table_cache = {}
+local CACHE_TTL_SECONDS = 60
 
 local default_mappings = {
   run = "<leader>dr",
@@ -525,6 +539,148 @@ local function complete_snapshots(arglead, _cmdline, _cursorpos)
   return complete.filter_prefix(snapshot_names(), arglead)
 end
 
+local function now_seconds()
+  return math.floor(os.time())
+end
+
+--- Cached table-name lookup for the active connection. Honours a 60s TTL
+--- so completion stays responsive on schemas with many tables.
+---@return string[]
+local function table_names(arglead)
+  local conn = M.current_connection()
+  if not conn or conn == "" then
+    return {}
+  end
+  local now = now_seconds()
+  local entry = table_cache[conn]
+  if not entry or (now - (entry.fetched_at or 0)) >= CACHE_TTL_SECONDS then
+    local argv = { "tables", "--conn", conn, "--json" }
+    -- Pass --like as a substring so the server-side filter prunes large
+    -- schemas. The Neovim side still applies filter_prefix, but doing this
+    -- here keeps the wire response bounded on huge databases.
+    if arglead and arglead ~= "" then
+      argv[#argv + 1] = "--like"
+      argv[#argv + 1] = arglead
+    end
+    local stdout = run_sync_stdout(argv)
+    local names = complete.parse_tables_list(stdout)
+    table_cache[conn] = { fetched_at = now, names = names }
+    entry = table_cache[conn]
+  end
+  return entry.names or {}
+end
+
+local function column_names(table_name)
+  if not table_name or table_name == "" then
+    return {}
+  end
+  local stdout = run_sync_stdout({ "columns", "--conn", M.current_connection() or "", "--table", table_name })
+  return complete.parse_columns_list(stdout, table_name)
+end
+
+local function complete_table_names(arglead, _cmdline, _cursorpos)
+  return complete.filter_prefix(table_names(arglead), arglead)
+end
+
+local function complete_column_names(arglead, _cmdline, _cursorpos)
+  -- Look back on the cmdline for the closest `from <table>` / `update <table>`
+  -- preceding the cursor so we ask the CLI for the right table's columns.
+  -- Falls back to empty (caller is asked to specify the table) when no
+  -- preceding token names a table.
+  local cmdline = _cmdline or ""
+  local cursorpos = _cursorpos or #cmdline
+  local prefix = cmdline:sub(1, cursorpos)
+  local lowered = prefix:lower()
+  local hint = nil
+  for token in lowered:gmatch("[%s,(](from%s+[%w_]+)") do
+    hint = token:match("from%s+([%w_]+)")
+  end
+  if not hint then
+    for token in lowered:gmatch("[%s,(](update%s+[%w_]+)") do
+      hint = token:match("update%s+([%w_]+)")
+    end
+  end
+  if not hint then
+    for token in lowered:gmatch("[%s,(](into%s+[%w_]+)") do
+      hint = token:match("into%s+([%w_]+)")
+    end
+  end
+  if not hint then
+    return {}
+  end
+  return complete.filter_prefix(column_names(hint), arglead)
+end
+
+--- Locate the most recent FROM / UPDATE / INSERT INTO / INTO clause in
+--- `text` and return the table it references. Returns nil when no clause
+--- is found or the captured token is not a simple identifier.
+---@param text string
+---@return string|nil
+local function nearest_table_hint(text)
+  if not text or text == "" then
+    return nil
+  end
+  local lowered = text:lower()
+  -- Walk backwards so the most-recent clause wins (relevant when the
+  -- buffer has multiple statements; we only need the one nearest the cursor).
+  local last
+  for token in lowered:gmatch("[%s,(](from%s+[%w_]+)") do
+    last = token:match("from%s+([%w_]+)")
+  end
+  if not last then
+    for token in lowered:gmatch("[%s,(](update%s+[%w_]+)") do
+      last = token:match("update%s+([%w_]+)")
+    end
+  end
+  if not last then
+    for token in lowered:gmatch("[%s,(](into%s+[%w_]+)") do
+      last = token:match("into%s+([%w_]+)")
+    end
+  end
+  return last
+end
+
+--- Omnifunc for SQL buffers. findstart=1: return byte offset of the
+--- identifier currently being completed. findstart=0: list candidates
+--- (table names or column names for the FROM/UPDATE/INTO clause nearest
+--- the cursor).
+---@param findstart integer
+---@return integer|string[]
+function M.omnifunc(findstart)
+  if findstart == 1 then
+    local line = vim.api.nvim_get_current_line()
+    local cursor = vim.api.nvim_win_get_cursor(0)[2]
+    local i = cursor
+    while i > 0 do
+      local ch = line:sub(i, i)
+      if not ch or not ch:match("[%w_]") then
+        break
+      end
+      i = i - 1
+    end
+    return i
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  if vim.bo[bufnr].filetype ~= "sql" then
+    return {}
+  end
+
+  local ok, conn = pcall(M.current_connection)
+  if not ok or not conn or conn == "" then
+    return {}
+  end
+
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local before = vim.api.nvim_buf_get_lines(bufnr, 0, row, false)
+  local text = table.concat(before, "\n")
+  local hint = nearest_table_hint(text)
+  if hint then
+    return complete.filter_prefix(column_names(hint), "")
+  end
+  return complete.filter_prefix(table_names(""), "")
+end
+
 --- Parse `dbx history list --json` (one JSON object per line) into a list.
 ---@param stdout string|nil
 ---@return table[]
@@ -676,6 +832,44 @@ local function register_commands()
       run({ "ddl", "--conn", conn, "--table", table_name }, { kind = "ddl", filetype = "sql" })
     end
   end, { nargs = "?", desc = "Muestra el DDL de una tabla" })
+
+  vim.api.nvim_create_user_command("DbTables", function(opts)
+    local conn = connection()
+    if not conn then
+      return
+    end
+    local arg = vim.trim(opts.args or "")
+    local argv = { "tables", "--conn", conn }
+    if arg ~= "" then
+      argv[#argv + 1] = "--like"
+      argv[#argv + 1] = arg
+    end
+    run(argv, { kind = "tables", filetype = "tsv" })
+  end, {
+    nargs = "?",
+    complete = complete_table_names,
+    desc = "Lista tablas (--like opcional)",
+  })
+
+  vim.api.nvim_create_user_command("DbColumns", function(opts)
+    local conn = connection()
+    if not conn then
+      return
+    end
+    local arg = vim.trim(opts.args)
+    local table_name = arg
+    if table_name == "" then
+      table_name = vim.fn.expand("<cword>")
+    end
+    if table_name == "" then
+      notify("DbColumns requiere una tabla o una palabra bajo el cursor")
+      return
+    end
+    run({ "columns", "--conn", conn, "--table", table_name }, { kind = "columns", filetype = "tsv" })
+  end, {
+    nargs = "?",
+    desc = "Lista columnas de una tabla (--table implícito)",
+  })
 
   vim.api.nvim_create_user_command("DbSnapshot", function(opts)
     local name = vim.trim(opts.args)
@@ -887,6 +1081,30 @@ local function merge_table(base, incoming)
   return out
 end
 
+--- Replace (or install for the first time) the FileType autocmd that points
+--- SQL buffers at `dbx.omnifunc`. Tracking the id keeps re-entrant `setup`
+--- calls idempotent — the previous autocmd is detached first.
+local function install_sql_omnifunc_autocmd()
+  if sql_omnifunc_autocmd_id then
+    pcall(vim.api.nvim_del_autocmd, sql_omnifunc_autocmd_id)
+    sql_omnifunc_autocmd_id = nil
+  end
+  if not config.sql_omnifunc then
+    return
+  end
+  local group = vim.api.nvim_create_augroup("dbx_omnifunc", { clear = false })
+  sql_omnifunc_autocmd_id = vim.api.nvim_create_autocmd("FileType", {
+    group = group,
+    pattern = "sql",
+    callback = function(args)
+      if not vim.api.nvim_buf_is_valid(args.buf) then
+        return
+      end
+      vim.bo[args.buf].omnifunc = "v:lua.require'dbx'.omnifunc"
+    end,
+  })
+end
+
 function M.setup(opts)
   opts = opts or {}
   if opts.executable ~= nil then
@@ -913,8 +1131,36 @@ function M.setup(opts)
   if opts.danger_preflight ~= nil then
     config.danger_preflight = opts.danger_preflight and true or false
   end
+  if opts.sql_omnifunc ~= nil then
+    config.sql_omnifunc = opts.sql_omnifunc and true or false
+  end
+
+  -- Reset cached table lists on every setup call so configuration changes
+  -- (new connection, root, executable) take effect immediately.
+  table_cache = {}
+
+  install_sql_omnifunc_autocmd()
+
   register_commands()
   register_keymaps(config.mappings)
+end
+
+--- True while a SQL buffer in the current Neovim session has the dbx
+--- omnifunc installed. Exposed for tests and `:checkhealth`-style
+--- inspection.
+---@return boolean
+function M.sql_omnifunc_active()
+  if not config.sql_omnifunc then
+    return false
+  end
+  if not sql_omnifunc_autocmd_id then
+    return false
+  end
+  local autocmds = vim.api.nvim_get_autocmds({
+    group = vim.api.nvim_create_augroup("dbx_omnifunc", { clear = false }),
+    event = "FileType",
+  })
+  return autocmds and #autocmds > 0
 end
 
 return M
