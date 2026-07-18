@@ -65,6 +65,15 @@ vim.fn.writefile({
   "  diff) printf '@@ status @@\\n-old\\n+new\\n' ;;",
   "  snapshot) printf '/tmp/before.json\\n' ;;",
   "  fail) printf 'fake failure\\n' >&2; exit 7 ;;",
+  "  danger)",
+  "    case \"$3\" in",
+  "      warn) printf '{\"type\":\"danger\",\"safe\":false,\"severity\":\"warning\",\"findings\":[{\"code\":\"select_for_update\",\"message\":\"x\",\"severity\":\"warning\"}]}\\n' ;;",
+  "      critical) printf '{\"type\":\"danger\",\"safe\":false,\"severity\":\"critical\",\"findings\":[{\"code\":\"drop_statement\",\"message\":\"x\",\"severity\":\"critical\"}]}\\n' ;;",
+  "      prod) printf '{\"type\":\"danger\",\"safe\":false,\"severity\":\"critical\",\"findings\":[{\"code\":\"write_statement\",\"message\":\"x\",\"severity\":\"warning\"},{\"code\":\"restricted_environment_write\",\"message\":\"x\",\"severity\":\"critical\"}]}\\n' ;;",
+  "      bad) printf 'this is not json\\n' ;;",
+  "      die) printf 'fake danger failure\\n' >&2; exit 11 ;;",
+  "      *) printf '{\"type\":\"danger\",\"safe\":true,\"severity\":\"safe\",\"findings\":[]}\\n' ;;",
+  "    esac ;;",
   "  *) printf '[{\"ok\":true}]\\n' ;;",
   "esac",
 }, fake)
@@ -111,6 +120,15 @@ end
 
 local function assert_log_contains(needle, message)
   assert(log_text():find(needle, 1, true), message or ("log missing: " .. needle))
+end
+
+local function close_extra_windows()
+  local cur = vim.api.nvim_get_current_win()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if win ~= cur then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
 end
 
 vim.cmd.enew()
@@ -530,6 +548,124 @@ close_all_windows()
 
 -- restore default setup so any later tests behave as before
 require("dbx").setup({ executable = fake, connection = "local_wms", root = ux })
+
+-- Danger preflight on :DbRun.
+local function last_notification()
+  return notifications[#notifications]
+end
+
+-- Safe SQL → preflight invokes danger, proceeds silently.
+require("dbx").setup({ executable = fake, connection = "safe", root = neutral })
+close_extra_windows()
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+clear_log()
+vim.cmd("DbRun")
+wait_for("query --conn safe")
+assert_log_contains("danger --conn safe", "preflight must invoke dbx danger")
+assert_log_contains("query --conn safe", "safe SQL must proceed to query")
+close_extra_windows()
+
+-- Warning severity → notify WARN, proceed.
+require("dbx").setup({ executable = fake, connection = "warn", root = neutral })
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+clear_log()
+vim.cmd("DbRun")
+wait_for("query --conn warn")
+local warn_note = last_notification()
+assert(warn_note.message:find("advertencias", 1, true), "warning must notify: " .. warn_note.message)
+assert(warn_note.level == vim.log.levels.WARN, "warning notify must use WARN level")
+assert_log_contains("query --conn warn", "warning SQL must still proceed")
+close_extra_windows()
+
+-- Critical severity without env write block → notify ERROR, proceed.
+require("dbx").setup({ executable = fake, connection = "critical", root = neutral })
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "drop table orders;" })
+clear_log()
+vim.cmd("DbRun")
+wait_for("query --conn critical")
+local crit_note = last_notification()
+assert(crit_note.message:find("antes de ejecutar", 1, true), "critical must notify: " .. crit_note.message)
+assert(crit_note.level == vim.log.levels.ERROR, "critical notify must use ERROR level")
+assert_log_contains("query --conn critical", "non-env critical SQL must still proceed")
+close_extra_windows()
+
+-- Critical severity + restricted_environment_write → block.
+require("dbx").setup({ executable = fake, connection = "prod", root = neutral })
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "update t set x=1;" })
+clear_log()
+vim.cmd("DbRun")
+wait_for("danger --conn prod")
+local block_note = last_notification()
+assert(block_note.message:find("bloqueada", 1, true), "env write must notify block: " .. block_note.message)
+assert(block_note.level == vim.log.levels.ERROR, "block notify must use ERROR level")
+assert(not log_text():find("query --conn prod", 1, true), "blocked SQL must not run query")
+close_extra_windows()
+
+-- danger_preflight = false → no danger call, no block.
+require("dbx").setup({
+  executable = fake,
+  connection = "prod",
+  root = neutral,
+  danger_preflight = false,
+})
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "update t set x=1;" })
+clear_log()
+vim.cmd("DbRun")
+wait_for("query --conn prod")
+assert(not log_text():find("danger --conn prod", 1, true), "danger_preflight=false must skip CLI call")
+close_extra_windows()
+
+-- Restore preflight before subsequent tests that depend on it.
+require("dbx").setup({
+  executable = fake,
+  connection = "die",
+  root = neutral,
+  danger_preflight = true,
+})
+
+-- Danger CLI error → graceful fallback to proceed.
+require("dbx").setup({ executable = fake, connection = "die", root = neutral })
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+clear_log()
+vim.cmd("DbRun")
+wait_for("query --conn die")
+local die_note = last_notification()
+assert(die_note.message:find("Preflight danger omitido", 1, true), "danger CLI error must notify info: " .. die_note.message)
+assert(die_note.level == vim.log.levels.INFO, "danger CLI error notify must use INFO level")
+assert_log_contains("query --conn die", "danger CLI error must fall back to proceed")
+close_extra_windows()
+
+-- Bad JSON from danger CLI → graceful fallback to proceed.
+require("dbx").setup({ executable = fake, connection = "bad", root = neutral })
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+clear_log()
+vim.cmd("DbRun")
+wait_for("query --conn bad")
+local bad_note = last_notification()
+assert(bad_note.message:find("Preflight danger", 1, true), "bad JSON must notify info: " .. bad_note.message)
+assert(bad_note.level == vim.log.levels.INFO, "bad JSON notify must use INFO level")
+assert_log_contains("query --conn bad", "bad JSON must fall back to proceed")
+close_extra_windows()
+
+-- Range/visual DbRun goes through preflight too.
+require("dbx").setup({ executable = fake, connection = "safe", root = neutral })
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 99;" })
+clear_log()
+vim.cmd("1DbRun")
+wait_for("query --conn safe")
+assert_log_contains("danger --conn safe", "range DbRun must invoke preflight")
+close_extra_windows()
+
+-- Default setup before exit.
+require("dbx").setup({ executable = fake, connection = "local_wms", root = false })
 
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")
