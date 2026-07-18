@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jd4n14/dbx/internal/config"
+	"github.com/jd4n14/dbx/internal/history"
 	"github.com/jd4n14/dbx/internal/query"
 	"github.com/jd4n14/dbx/internal/snapshot"
 )
@@ -32,7 +34,8 @@ func runQuery(args []string) error {
 //	--config optional config path (else discovery / DBX_CONFIG)
 //
 // SQL is read fully from stdin. On success, the result is cached as
-// .dbx/last.json under cwd, then pretty JSON rows are written only to stdout.
+// .dbx/last.json under cwd, the lightweight .dbx/history.jsonl entry is
+// appended, then pretty JSON rows are written only to stdout.
 // Policy runs inside runConn before any Open (see query.RunConnection).
 //
 // cwd is the project root for last-result storage; empty uses os.Getwd().
@@ -80,6 +83,7 @@ func runQueryCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, runCo
 		runConn = query.RunConnection
 	}
 
+	startedAt := time.Now()
 	out, err := runConn(ctx, conn, sqlText)
 	if err != nil {
 		return err
@@ -93,8 +97,23 @@ func runQueryCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, runCo
 	}
 
 	// Cache last result before stdout so failures leave stdout empty.
-	if err := snapshot.WriteLastFromQueryData(cwd, strings.TrimSpace(*connName), sqlText, out); err != nil {
+	resolvedConn := strings.TrimSpace(*connName)
+	if err := snapshot.WriteLastFromQueryData(cwd, resolvedConn, sqlText, out); err != nil {
 		return err
+	}
+
+	// Append a lightweight history entry so users can re-run recent
+	// successful queries. History failures must not break the user-visible
+	// success path — they only warn on stderr.
+	if err := history.Append(cwd, history.Entry{
+		Timestamp:  startedAt.UTC(),
+		Connection: resolvedConn,
+		SQL:        sqlText,
+		Rows:       countJSONRows(out),
+		Bytes:      len(out),
+		DurationMs: time.Since(startedAt).Milliseconds(),
+	}, 0); err != nil {
+		fmt.Fprintf(stderr, "warn: history append failed: %v\n", err)
 	}
 
 	// Write JSON only after full success (stdout purity).
@@ -102,4 +121,35 @@ func runQueryCmd(args []string, stdin io.Reader, stdout, stderr io.Writer, runCo
 		return fmt.Errorf("write stdout: %w", err)
 	}
 	return nil
+}
+
+// countJSONRows returns the number of rows encoded in pretty/compact JSON
+// emitted by dbx query. Accepts an array form (the common case) or a single
+// object (treated as 1 row). Anything else returns 0.
+func countJSONRows(data []byte) int {
+	trimmed := bytesTrim(data)
+	if len(trimmed) == 0 {
+		return 0
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(trimmed, &arr); err == nil {
+		return len(arr)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err == nil {
+		return 1
+	}
+	return 0
+}
+
+// bytesTrim trims ASCII whitespace from both ends without allocating a copy.
+func bytesTrim(b []byte) []byte {
+	i, j := 0, len(b)
+	for i < j && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	for j > i && (b[j-1] == ' ' || b[j-1] == '\t' || b[j-1] == '\n' || b[j-1] == '\r') {
+		j--
+	}
+	return b[i:j]
 }

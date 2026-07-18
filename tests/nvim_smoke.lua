@@ -556,6 +556,9 @@ end
 
 -- Safe SQL → preflight invokes danger, proceeds silently.
 require("dbx").setup({ executable = fake, connection = "safe", root = neutral })
+-- Earlier :DbConn tests left a session_connection override; align it so
+-- plain `DbRun` uses the connection this block just set up.
+vim.cmd("DbConn safe")
 close_extra_windows()
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
@@ -568,6 +571,7 @@ close_extra_windows()
 
 -- Warning severity → notify WARN, proceed.
 require("dbx").setup({ executable = fake, connection = "warn", root = neutral })
+vim.cmd("DbConn warn")
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
 clear_log()
@@ -581,6 +585,7 @@ close_extra_windows()
 
 -- Critical severity without env write block → notify ERROR, proceed.
 require("dbx").setup({ executable = fake, connection = "critical", root = neutral })
+vim.cmd("DbConn critical")
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "drop table orders;" })
 clear_log()
@@ -594,6 +599,7 @@ close_extra_windows()
 
 -- Critical severity + restricted_environment_write → block.
 require("dbx").setup({ executable = fake, connection = "prod", root = neutral })
+vim.cmd("DbConn prod")
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "update t set x=1;" })
 clear_log()
@@ -612,6 +618,7 @@ require("dbx").setup({
   root = neutral,
   danger_preflight = false,
 })
+vim.cmd("DbConn prod")
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "update t set x=1;" })
 clear_log()
@@ -630,6 +637,7 @@ require("dbx").setup({
 
 -- Danger CLI error → graceful fallback to proceed.
 require("dbx").setup({ executable = fake, connection = "die", root = neutral })
+vim.cmd("DbConn die")
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
 clear_log()
@@ -643,6 +651,7 @@ close_extra_windows()
 
 -- Bad JSON from danger CLI → graceful fallback to proceed.
 require("dbx").setup({ executable = fake, connection = "bad", root = neutral })
+vim.cmd("DbConn bad")
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
 clear_log()
@@ -656,6 +665,7 @@ close_extra_windows()
 
 -- Range/visual DbRun goes through preflight too.
 require("dbx").setup({ executable = fake, connection = "safe", root = neutral })
+vim.cmd("DbConn safe")
 vim.cmd.enew()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 99;" })
 clear_log()
@@ -666,6 +676,81 @@ close_extra_windows()
 
 -- Default setup before exit.
 require("dbx").setup({ executable = fake, connection = "local_wms", root = false })
+
+-- History: fake CLI returns canned JSON Lines for `history list --json` and
+-- a SQL blob for `history show 1` so :DbHistory and :DbHistoryLast can be
+-- exercised end-to-end without a real database.
+local history_project = tmp .. "/history-project"
+vim.fn.mkdir(history_project, "p")
+local hist = tmp .. "/hist-dbx"
+local hist_script = table.concat({
+  "#!/bin/sh",
+  'printf "cwd=%s\\n" "$(pwd)" >> "$DBX_TEST_LOG"',
+  'printf "%s\\n" "$*" >> "$DBX_TEST_LOG"',
+  'if [ ! -t 0 ]; then',
+  '  input=$(cat)',
+  '  printf "stdin=%s\\n" "$input" >> "$DBX_TEST_LOG"',
+  "fi",
+  'if [ "$1" = history ] && [ "$2" = list ]; then',
+  '  printf \'{"index":1,"type":"history_entry","ts":"2026-07-16T11:00:00Z","connection":"local_wms","sql":"select 1;","rows":1,"bytes":12,"duration_ms":42}\\n\'',
+  '  printf \'{"index":2,"type":"history_entry","ts":"2026-07-16T10:00:00Z","connection":"local_wms","sql":"select 42;","rows":1,"bytes":13,"duration_ms":15}\\n\'',
+  "  exit 0",
+  "fi",
+  'if [ "$1" = history ] && [ "$2" = show ]; then',
+  '  printf "select 1;\\n"',
+  "  exit 0",
+  "fi",
+  'case "$1" in',
+  '  query) printf \'[{"ok":true}]\\n\' ;;',
+  "  ddl) printf 'CREATE TABLE orders (id int);\\n' ;;",
+  "  diff) printf '@@ status @@\\n-old\\n+new\\n' ;;",
+  "  snapshot) printf '/tmp/before.json\\n' ;;",
+  '  *) printf \'[{"ok":true}]\\n\' ;;',
+  "esac",
+}, "\n") .. "\n"
+vim.fn.writefile(vim.split(hist_script, "\n", { plain = true }), hist)
+vim.fn.setfperm(hist, "rwx------")
+
+require("dbx").setup({ executable = hist, connection = "local_wms", root = history_project })
+clear_log()
+
+-- :DbHistory renders JSON Lines into a tabular 'history' result buffer.
+vim.cmd("DbHistory")
+wait_for("history list --json")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("history")), "history result buffer must exist")
+assert_equal("history", vim.b[result_bufnr("history")].dbx_result, "history buffer must be tagged")
+local history_lines = vim.api.nvim_buf_get_lines(result_bufnr("history"), 0, -1, false)
+assert(history_lines[1]:find("idx") and history_lines[1]:find("when") and history_lines[1]:find("connection") and history_lines[1]:find("sql"), "header row missing in history buffer")
+assert(#history_lines >= 3, "at least header + 2 entries expected, got " .. #history_lines)
+assert(history_lines[2]:match("^1\t") and history_lines[2]:find("local_wms") and history_lines[2]:find("select 1;"), "newest entry first row should be index 1 select 1")
+close_all_windows()
+
+-- :DbHistoryLast must re-issue the SQL of the newest entry under the entry's
+-- connection, not the setup default.
+clear_log()
+vim.cmd("DbHistoryLast")
+wait_for("query --conn local_wms")
+assert_log_contains("stdin=select 1;", "DbHistoryLast should pipe the newest SQL on stdin")
+close_all_windows()
+
+-- :DbHistoryLast with no entries must notify (not throw).
+local empty_hist = tmp .. "/empty-hist-dbx"
+vim.fn.writefile({ "#!/bin/sh", "exit 0" }, empty_hist)
+vim.fn.setfperm(empty_hist, "rwx------")
+local empty_proj = tmp .. "/empty-project"
+vim.fn.mkdir(empty_proj, "p")
+local before_notifications = #notifications
+require("dbx").setup({ executable = empty_hist, connection = "local_wms", root = empty_proj })
+vim.cmd("DbHistoryLast")
+assert(vim.wait(1000, function() return #notifications > before_notifications end, 10), "DbHistoryLast on empty history should notify")
+assert(
+  notifications[#notifications].message:find("No hay historial", 1, true),
+  "empty history should notify friendly, got " .. notifications[#notifications].message
+)
+
+-- Restore default setup so the file is left in a clean state for the final
+-- cleanup pass. (Smoke test ends with qa!; failure would happen earlier.)
+require("dbx").setup({ executable = fake, connection = "local_wms", root = ux })
 
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")
