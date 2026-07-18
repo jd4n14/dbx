@@ -28,6 +28,7 @@ the status after completion.
 | [004](004-danger-analysis.md) | Report dangerous SQL without executing it | P1 | M | — | DONE |
 | [005](005-neovim-mvp-client.md) | Expose the complete MVP through Neovim | P1 | M | 001, 002, 003, 004 | DONE |
 | [006](006-sqlite-test-connector.md) | Add a portable SQLite connector for integration tests | P2 | M | — | TODO |
+| [007](007-schema-browser-with-sql-completion.md) | Schema browser + SQL completion (`dbx tables` / `dbx columns`, `:DbTables` / `:DbColumns`, omnifunc) | P1 | M | — | DONE |
 
 ## Dependency notes
 
@@ -41,6 +42,10 @@ the status after completion.
 - Plan 006 can be executed after Plan 001 and before the remaining plans to
   give their executors an offline database integration-test option. It is not
   required by the user-facing command implementations.
+- Plan 007 ships independently of every prior plan; the daily DataGrip gap
+  ("what tables exist") is the most common interruption when reviewing SQL
+  from Neovim. Its omnifunc benefits downstream plans (column-aware INSERT
+  export, EXPLAIN columns) without entangling them.
 - Add GitHub Actions only after these plans are merged: its initial workflow
   should run the already-verified `go test ./...`, `go vet ./...`, and build
   commands. It is intentionally not a separate MVP blocker.
@@ -55,3 +60,8 @@ the status after completion.
 - **Query row limits:** worth scheduling after the MVP. `README.md` documents
   the unbounded-result limitation, but a limit changes the output contract and
   needs a separate product decision (default, override, truncation metadata).
+- **`--like` wildcards for `dbx tables`/`dbx columns`:** deferred. Accepting
+  identifier-shape LIKE literals keeps the SQL builder safe and side-steps
+  full LIKE-pattern parsing; users who want prefix filtering run
+  `complete.filter_prefix` on the Neovim side. Wildcard support can ship later
+  via a `like_pattern` flag without breaking the current contract.

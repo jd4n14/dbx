@@ -408,6 +408,62 @@ go test ./internal/ddl/ -count=1 -v -run Integration
 
 Si `DBX_MYSQL_TEST_DSN` no está definido, el test de integración se **salta** (no falla el suite offline).
 
+## CLI: schema browser (`dbx tables` / `dbx columns`)
+
+Inspeccionar el esquema no debe requerir un cliente visual. Estos dos comandos
+expone las dos preguntas diarias de DataGrip (`¿qué tablas hay?` y `¿qué columnas tiene esta tabla?`) sin salir de Neovim. Sustituyen a `SHOW TABLES` y `SHOW COLUMNS` ejecutados a mano.
+
+### `dbx tables`
+
+Lista las tablas del esquema actual de la conexión. Default: un nombre por línea (pipe-friendly). `--json` emite un array JSON pretty.
+
+```bash
+dbx tables --conn local_wms                         # una tabla por línea
+dbx tables --conn local_wms --schema audit          # SHOW TABLES FROM `audit`
+dbx tables --conn local_wms --like ord              # LIKE-primer (identifier-shaped)
+dbx tables --conn local_wms --json                  # array JSON
+```
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--conn` | sí | Conexión nombrada en el YAML |
+| `--config` | no | Ruta al config (mismo discovery que `query`) |
+| `--schema` | no | Esquema a inspeccionar (default: base de la conexión) |
+| `--like` | no | Patrón `LIKE` (debe ser identifier-shape; sin wildcards) |
+| `--json` | no | Array JSON pretty en lugar de texto por línea |
+
+- Exito → stdout (texto o JSON), exit 0.
+- Fallo → `error: …` en stderr, stdout vacío, exit ≠ 0.
+- `--schema` y `--like` se validan antes de cualquier llamada a la base; nada se ejecuta con input inválido.
+
+### `dbx columns`
+
+Lista las columnas de una tabla (`SHOW COLUMNS FROM <table>`). Default: TSV con cabecera (`field<TAB>type<TAB>null<TAB>key<TAB>default<TAB>extra`), una fila por columna. `--json` emite un array JSON pretty con `field`, `type`, `null`, `key`, `default`, `extra`.
+
+```bash
+dbx columns --conn local_wms --table orders         # TSV con cabecera
+dbx columns --conn local_wms --table orders --json  # array JSON
+dbx columns --conn local_wms --table orders --like id
+```
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--conn` | sí | Conexión nombrada en el YAML |
+| `--table` | sí | Nombre simple de tabla |
+| `--config` | no | Ruta al config |
+| `--like` | no | Patrón `LIKE` (identifier-shape) |
+| `--json` | no | Array JSON en lugar de TSV |
+
+- Default TSV: cabecera en la primera línea (alineada con DataGrip), una columna por línea.
+- JSON: cada columna es un objeto con `default: null` cuando MySQL devolvió NULL — el cliente Lua lo trata como ausente.
+- Validación y contratos idénticos a `dbx ddl` (incluida la regla `--table` ASCII).
+
+### Comandos Neovim y omnifunc SQL
+
+- `:DbTables [patrón]` abre un buffer `tsv` etiquetado `dbx_result = "tables"` con un nombre por línea (igual que `dbx tables`). Acepta `--like` implícito.
+- `:DbColumns [tabla]` (con `<cword>` como fallback) abre el TSV de columnas en un buffer `tsv` etiquetado `dbx_result = "columns"`.
+- `setup({ sql_omnifunc = true })` (default) instala `dbx.omnifunc` en buffers `sql` mediante un autocmd `FileType`. `<C-X><C-O>` (y `nvim-cmp` con un source que apunte a `dbx.omnifunc`) ofrece nombres de tablas cuando no hay `FROM`/`UPDATE`/`INSERT INTO` cerca del cursor y nombres de columnas para la tabla más cercana a la izquierda del cursor. Para desactivarlo: `setup({ sql_omnifunc = false })`.
+
 ## CLI: `dbx ddl` (MySQL)
 
 Obtiene el DDL de una tabla con `SHOW CREATE TABLE`.
