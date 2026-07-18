@@ -424,5 +424,112 @@ assert_equal(nil, find_map("n", "<leader>dd"), "ddl=false must remove default dd
 require("dbx").setup({ executable = complete_fake, connection = "alpha_conn", root = complete_project, mappings = false })
 assert_equal(0, count_dbx_maps(), "mappings=false after true must clear dbx keymaps")
 
+-- Result UX: buffer tagged, configurable orientation/size/focus.
+local ux = tmp .. "/ux"
+vim.fn.mkdir(ux, "p")
+require("dbx").setup({ executable = fake, connection = "local_wms", root = ux })
+-- Earlier :DbConn tests left a session_connection override; align it so
+-- plain `DbRun` uses the same connection this block just set up.
+vim.cmd("DbConn local_wms")
+
+local function close_all_windows()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if win ~= vim.api.nvim_get_current_win() then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
+end
+
+-- Earlier tests accumulated split windows; collapse them so result UX tests
+-- have headroom for new splits in a small headless nvim (default 24 lines).
+close_all_windows()
+
+local function result_bufnr(kind)
+  return vim.fn.bufnr("dbx://" .. kind)
+end
+
+-- Default: horizontal botright split, focus on result, vim.b.dbx_result set.
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 9;" })
+local src_default = vim.api.nvim_get_current_buf()
+vim.cmd("DbRun")
+wait_for("query --conn local_wms")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("query")), "result buffer must exist")
+assert_equal("query", vim.b[result_bufnr("query")].dbx_result, "dbx_result buffer tag must match kind")
+local win_count = #vim.api.nvim_list_wins()
+assert(win_count >= 2, "DbRun must open a split for results")
+local source_win = vim.fn.bufwinid(src_default)
+assert(source_win ~= -1, "source window must remain visible")
+close_all_windows()
+
+-- focus = "source" must keep cursor on the source buffer after DbRun.
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = ux,
+  result = { focus = "source" },
+})
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 10;" })
+local src_keep = vim.api.nvim_get_current_buf()
+vim.cmd("DbRun")
+wait_for("stdin=select 10;")
+assert_equal(src_keep, vim.api.nvim_get_current_buf(), "focus=source must not move focus to result")
+assert_equal("query", vim.b[result_bufnr("query")].dbx_result, "dbx_result tag still set with focus=source")
+close_all_windows()
+
+-- Vertical orientation must use a vsplit (width < full columns).
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = ux,
+  result = { orientation = "vertical", size = 0.5, focus = "result" },
+})
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 11;" })
+vim.cmd("DbRun")
+wait_for("stdin=select 11;")
+local result_win = vim.fn.bufwinid(result_bufnr("query"))
+assert(result_win ~= -1, "vertical result window must exist")
+local result_width = vim.api.nvim_win_get_width(result_win)
+local cols = vim.o.columns
+assert(result_width < cols, "vertical split must be narrower than full editor width")
+assert(result_width <= math.floor(cols * 0.5) + 1, "vertical size=0.5 should roughly halve columns")
+close_all_windows()
+
+-- Horizontal orientation with size=0.5 must shrink the result window height.
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = ux,
+  result = { orientation = "horizontal", size = 0.5, focus = "result" },
+})
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 12;" })
+vim.cmd("DbRun")
+wait_for("stdin=select 12;")
+local h_win = vim.fn.bufwinid(result_bufnr("query"))
+assert(h_win ~= -1, "horizontal result window must exist")
+local h_height = vim.api.nvim_win_get_height(h_win)
+local h_lines = vim.o.lines
+assert(h_height < h_lines, "horizontal split must be shorter than full editor height")
+assert(h_height <= math.floor(h_lines * 0.5) + 1, "horizontal size=0.5 should roughly halve lines")
+close_all_windows()
+
+-- Reusing the same kind buffer does not stack windows: it refreshes in place.
+require("dbx").setup({ executable = fake, connection = "local_wms", root = ux })
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 13;" })
+vim.cmd("DbRun")
+wait_for("stdin=select 13;")
+local wins_after_first = #vim.api.nvim_list_wins()
+vim.cmd("DbRun")
+wait_for("stdin=select 13;")
+assert_equal(wins_after_first, #vim.api.nvim_list_wins(), "reused result buffer must not open a new window")
+close_all_windows()
+
+-- restore default setup so any later tests behave as before
+require("dbx").setup({ executable = fake, connection = "local_wms", root = ux })
+
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")

@@ -8,6 +8,14 @@ local config = {
   ---@type boolean|table
   -- false/nil: no keymaps; true: default leader maps; table: explicit lhs overrides.
   mappings = false,
+  result = {
+    -- "horizontal" = botright split (default). "vertical" = botright vsplit.
+    orientation = "horizontal",
+    -- Fraction of the editor occupied by the result split (0 < size < 1).
+    size = 0.4,
+    -- Where focus goes after rendering: "result" (default), "source", or "none".
+    focus = "result",
+  },
 }
 
 -- Session connection override set by :DbConn (takes precedence over setup.connection).
@@ -31,6 +39,38 @@ local function output_lines(stdout)
   return vim.split(stdout, "\n", { plain = true })
 end
 
+--- Resolve the split command for the configured orientation.
+---@return string
+local function split_command(orientation)
+  if orientation == "vertical" then
+    return "botright vsplit"
+  end
+  return "botright split"
+end
+
+--- Apply `size` (fraction in (0,1)) to the just-created result split.
+---@param win integer
+---@param orientation string
+---@param size number|nil
+local function apply_result_size(win, orientation, size)
+  if type(size) ~= "number" or size <= 0 or size >= 1 then
+    return
+  end
+  if orientation == "vertical" then
+    local cols = vim.o.columns
+    if type(cols) == "number" and cols > 0 then
+      local target = math.max(1, math.floor(cols * size))
+      vim.api.nvim_win_set_width(win, target)
+    end
+    return
+  end
+  local lines = vim.o.lines
+  if type(lines) == "number" and lines > 0 then
+    local target = math.max(1, math.floor(lines * size))
+    vim.api.nvim_win_set_height(win, target)
+  end
+end
+
 local function result_buffer(kind, filetype, stdout)
   local name = "dbx://" .. kind
   local bufnr = vim.fn.bufnr(name)
@@ -39,13 +79,13 @@ local function result_buffer(kind, filetype, stdout)
     vim.api.nvim_buf_set_name(bufnr, name)
   end
 
+  local source_win = vim.api.nvim_get_current_win()
   local win = vim.fn.bufwinid(bufnr)
   if win == -1 then
-    vim.cmd("botright split")
+    vim.cmd(split_command(config.result.orientation))
     win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, bufnr)
-  else
-    vim.api.nvim_set_current_win(win)
+    apply_result_size(win, config.result.orientation, config.result.size)
   end
 
   vim.bo[bufnr].buftype = "nofile"
@@ -54,8 +94,17 @@ local function result_buffer(kind, filetype, stdout)
   vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, output_lines(stdout))
   vim.bo[bufnr].filetype = filetype
+  vim.b[bufnr].dbx_result = kind
   vim.bo[bufnr].modified = false
   vim.bo[bufnr].modifiable = false
+
+  local focus = config.result.focus
+  if focus == "source" and vim.api.nvim_win_is_valid(source_win) then
+    vim.api.nvim_set_current_win(source_win)
+  elseif focus == "result" then
+    vim.api.nvim_set_current_win(win)
+  end
+  -- focus == "none" or unknown: leave focus where it already is
 end
 
 local function executable_available(executable)
@@ -586,6 +635,26 @@ local function register_keymaps(mappings)
   end
 end
 
+--- Deep-merge `incoming` into `base`, returning a fresh table; only known keys
+--- (or any scalar sub-key if `base` had it) get replaced. We keep things
+--- minimal here: each leaf field is replaced wholesale.
+---@param base table
+---@param incoming table|nil
+---@return table
+local function merge_table(base, incoming)
+  local out = {}
+  for k, v in pairs(base) do
+    out[k] = v
+  end
+  if type(incoming) ~= "table" then
+    return out
+  end
+  for k, v in pairs(incoming) do
+    out[k] = v
+  end
+  return out
+end
+
 function M.setup(opts)
   opts = opts or {}
   if opts.executable ~= nil then
@@ -605,6 +674,9 @@ function M.setup(opts)
   end
   if opts.mappings ~= nil then
     config.mappings = opts.mappings
+  end
+  if opts.result ~= nil then
+    config.result = merge_table(config.result, opts.result)
   end
   register_commands()
   register_keymaps(config.mappings)

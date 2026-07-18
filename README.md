@@ -179,6 +179,17 @@ require("dbx").setup({
 })
 ```
 
+Opcionalmente, `setup({ result = { ... } })` controla cómo se abren los buffers
+de resultado (reutilizados por `kind` para no apilar splits):
+
+- `orientation`: `"horizontal"` (split inferior, default) o `"vertical"` (vsplit).
+- `size`: fracción en `(0,1)` del editor que ocupa el split (default `0.4`).
+- `focus`: `"result"` (default) lleva el cursor al split, `"source"` lo deja en
+  el archivo SQL, `"none"` no mueve el foco.
+
+Los buffers de resultado se etiquetan con `vim.b.dbx_result = <kind>` para
+identificarlos desde otros plugins o statuslines.
+
 Las credenciales permanecen en la configuración de dbx; el plugin no las copia
 ni las conserva en Lua. Los comandos disponibles son:
 
