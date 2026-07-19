@@ -14,7 +14,8 @@ the status after completion.
   diff, bounded JSON paths, offline SQL danger analysis, the portable SQLite
   test connector (Plan 006, offline-only), the schema browser (`dbx tables` /
   `dbx columns`, Plan 007), the Neovim omnifunc SQL completion, snapshot
-  export to CSV / JSON Lines with `--json` sidecar default ON (Plan 008), and
+  export to CSV / JSON Lines with `--json` sidecar default ON (Plan 008),
+  the `EXPLAIN` pretty-printer (`dbx explain`, `:DbExplain`, Plan 009), and
   the minimal Neovim client.
 - **Verification baseline:** `go test ./...`, `go vet ./...`, and
   `go build -o /tmp/dbx ./cmd/dbx` pass on the reviewed workspace. There is no
@@ -32,7 +33,7 @@ the status after completion.
 | [006](006-sqlite-test-connector.md) | Add a portable SQLite connector for integration tests | P2 | M | — | DONE |
 | [007](007-schema-browser-with-sql-completion.md) | Schema browser + SQL completion (`dbx tables` / `dbx columns`, `:DbTables` / `:DbColumns`, omnifunc) | P1 | M | — | DONE |
 | [008](008-export-snapshots-csv-jsonl.md) | Snapshot CSV / JSONL export with `--json` sidecar (`dbx export`, `:DbExport`) | P2 | M | 001 | DONE |
-| [009](009-explain-pretty-printer.md) | Pretty-print `EXPLAIN` output (`dbx explain`, `:DbExplain`) | P2 | M | 001 | TODO |
+| [009](009-explain-pretty-printer.md) | Pretty-print `EXPLAIN` output (`dbx explain`, `:DbExplain`) | P2 | M | 001 | DONE |
 
 ## Dependency notes
 

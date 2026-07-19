@@ -114,17 +114,27 @@ func Write(outPath string, data json.RawMessage, opts Options) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		sidecarBody, err := renderSidecar(opts, res)
+		sidecarBody, err := RenderSidecar(Sidecar{
+			Version:    SidecarVersion,
+			Kind:       KindSnapshotExport,
+			SnapshotID: opts.SnapshotID,
+			Connection: opts.Connection,
+			ExportedAt: res.ExportedAt,
+			RowCount:   res.RowCount,
+			Columns:    res.Columns,
+			Format:     string(res.Format),
+			DBXVersion: opts.Version,
+		})
 		if err != nil {
 			return Result{}, err
 		}
-		if err := atomicWrite(sidecar, sidecarBody, 0o600); err != nil {
+		if err := AtomicWrite(sidecar, sidecarBody, 0o600); err != nil {
 			return Result{}, fmt.Errorf("write sidecar: %w", err)
 		}
 		res.Sidecar = sidecar
 	}
 
-	if err := atomicWrite(outPath, body, 0o600); err != nil {
+	if err := AtomicWrite(outPath, body, 0o600); err != nil {
 		// Best-effort sidecar cleanup when data write fails after sidecar
 		// already landed. The pair is broken either way; remove the
 		// misleading sidecar so the user does not trust it.
@@ -324,27 +334,38 @@ func renderJSONL(rows []map[string]any) ([]byte, error) {
 
 // Sidecar captures the audit metadata the plan requires. Field order matches
 // the README example so a quick `cat` is informative.
+//
+// Kind distinguishes sibling uses of the sidecar envelope ("snapshot_export"
+// for `dbx export`, "explain" for `dbx explain --json`). The field is
+// additive; older readers ignore unknown keys. Plan 009 (EXPLAIN
+// pretty-printer) reuses this struct directly via RenderSidecar so the
+// metadata shape stays uniform across commands.
 type Sidecar struct {
-	Version     string    `json:"version"`
-	SnapshotID  string    `json:"snapshot_id"`
-	Connection  string    `json:"connection,omitempty"`
-	ExportedAt  time.Time `json:"exported_at"`
-	RowCount    int       `json:"row_count"`
-	Columns     []string  `json:"columns"`
-	Format      string    `json:"format"`
-	DBXVersion  string    `json:"dbx_version,omitempty"`
+	Version    string    `json:"version"`
+	Kind       string    `json:"kind,omitempty"`
+	SnapshotID string    `json:"snapshot_id"`
+	Connection string    `json:"connection,omitempty"`
+	ExportedAt time.Time `json:"exported_at"`
+	RowCount   int       `json:"row_count"`
+	Columns    []string  `json:"columns"`
+	Format     string    `json:"format"`
+	DBXVersion string    `json:"dbx_version,omitempty"`
 }
 
-func renderSidecar(opts Options, res Result) ([]byte, error) {
-	s := Sidecar{
-		Version:    SidecarVersion,
-		SnapshotID: opts.SnapshotID,
-		Connection: opts.Connection,
-		ExportedAt: res.ExportedAt,
-		RowCount:   res.RowCount,
-		Columns:    res.Columns,
-		Format:     string(res.Format),
-		DBXVersion: opts.Version,
+// Known Kind values for the Sidecar envelope. Empty/missing is treated as
+// "snapshot_export" for backward compatibility with Plan 008 readers.
+const (
+	KindSnapshotExport = "snapshot_export"
+	KindExplain        = "explain"
+)
+
+// RenderSidecar encodes a Sidecar as pretty-printed JSON (2-space indent +
+// trailing newline). Exposed so other commands can stamp the same audit
+// shape without duplicating the formatter (Plan 009 EXPLAIN pretty-printer
+// reuses this directly).
+func RenderSidecar(s Sidecar) ([]byte, error) {
+	if s.Version == "" {
+		s.Version = SidecarVersion
 	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -363,15 +384,17 @@ func sidecarPath(outPath string) (string, error) {
 	return outPath + ".meta.json", nil
 }
 
-// atomicWrite writes data to path via a temp file in the same directory,
+// AtomicWrite writes data to path via a temp file in the same directory,
 // fsyncs it, then renames it into place. Same-directory tempfile guarantees
 // rename(2) is atomic on POSIX; the fsync ensures the bytes (and the
 // directory entry, after rename) hit stable storage.
 //
 // This is a hardened copy of snapshot.atomicWrite that adds fsync. Keeping
 // the helper in this package avoids changing the snapshot contract and
-// keeps the export concern isolated.
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
+// keeps the export concern isolated. Exposed so other commands (Plan 009
+// `dbx explain --json`) can reuse the same write barrier without
+// duplicating the dance.
+func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create dir: %w", err)
