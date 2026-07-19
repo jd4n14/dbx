@@ -37,8 +37,10 @@ func run(args []string) error {
 		return runDanger(args[1:])
 	case "history":
 		return runHistory(args[1:])
+	case "export":
+		return runExport(args[1:])
 	case "version", "--version", "-v":
-		fmt.Println("dbx 0.0.1")
+		fmt.Println(Version)
 		return nil
 	case "help", "--help", "-h":
 		printUsage()
@@ -65,6 +67,7 @@ Commands:
   path       Apply a path/JSONPath over a result or snapshot
   danger     Analyze SQL for dangerous statements
   history    List / show / clear recent successful dbx query runs
+  export     Dump a snapshot to CSV or JSONL (with optional JSON sidecar)
   version    Print version
   help       Show this help
 
@@ -84,5 +87,7 @@ Examples:
   dbx history list --limit 20 --json
   dbx history show 1
   dbx history clear
+  dbx export --format csv -o /tmp/before.csv before_split_order
+  dbx export --format jsonl --no-json after_split_order
 `)
 }

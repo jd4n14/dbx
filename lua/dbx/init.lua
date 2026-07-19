@@ -888,6 +888,26 @@ local function register_commands()
     desc = "Guarda el último resultado como snapshot",
   })
 
+  vim.api.nvim_create_user_command("DbExport", function(opts)
+    local name = vim.trim(opts.args)
+    if name == "" then
+      notify("DbExport requiere un nombre de snapshot")
+      return
+    end
+    -- Mirrors :DbSnapshot ergonomics: default args run `dbx export <name>`
+    -- (CSV, sidecar ON). Power users wanting a different format or
+    -- destination can shell out via `:!dbx export ...`.
+    run({ "export", name }, {
+      on_success = function(stdout)
+        notify("Export guardado en " .. vim.trim(stdout), vim.log.levels.INFO)
+      end,
+    })
+  end, {
+    nargs = "?",
+    complete = complete_snapshots,
+    desc = "Exporta un snapshot a CSV (con sidecar JSON por defecto)",
+  })
+
   vim.api.nvim_create_user_command("DbDiff", function(opts)
     if #opts.fargs ~= 2 then
       notify("DbDiff requiere <before> <after>")

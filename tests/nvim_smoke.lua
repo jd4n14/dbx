@@ -8,7 +8,7 @@ local function assert_equal(expected, actual, message)
   end
 end
 
-local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn" }
+local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn", "DbExport" }
 for _, name in ipairs(commands) do
   assert(vim.fn.exists(":" .. name) == 2, name .. " is not registered")
 end
@@ -102,6 +102,7 @@ vim.fn.writefile({
   "  ddl) printf 'CREATE TABLE orders (id int);\\n' ;;",
   "  diff) printf '@@ status @@\\n-old\\n+new\\n' ;;",
   "  snapshot) printf '/tmp/before.json\\n' ;;",
+  "  export) printf '/tmp/before.csv\\n/tmp/before.csv.meta.json\\n' ;;",
   "  fail) printf 'fake failure\\n' >&2; exit 7 ;;",
   "  danger)",
   "    case \"$3\" in",
@@ -239,6 +240,11 @@ vim.cmd("DbSnapshot before")
 wait_for("snapshot --from-last --name before")
 assert(notifications[#notifications].message:find("/tmp/before.json", 1, true), "snapshot path was not notified")
 
+vim.cmd("DbExport before")
+wait_for("export before")
+assert(notifications[#notifications].message:find("Export guardado", 1, true), ":DbExport should notify success path: " .. notifications[#notifications].message)
+assert(notifications[#notifications].message:find("before.csv", 1, true), ":DbExport notification should include data path")
+
 local before_notifications = #notifications
 require("dbx").setup({ executable = tmp .. "/missing", connection = "local_wms", root = neutral })
 vim.cmd("DbPath metadata.status")
@@ -360,6 +366,7 @@ local complete_script = table.concat({
   "  ddl) printf 'CREATE TABLE orders (id int);\\n' ;;",
   "  diff) printf '@@ status @@\\n-old\\n+new\\n' ;;",
   "  snapshot) printf '/tmp/before.json\\n' ;;",
+  "  export) printf '/tmp/before.csv\\n/tmp/before.csv.meta.json\\n' ;;",
   '  *) printf \'[{"ok":true}]\\n\' ;;',
   "esac",
 }, "\n") .. "\n"
@@ -379,6 +386,13 @@ assert_equal({ "before_snap" }, snap_prefix, "DbSnapshot complete should filter 
 
 local diff_all = vim.fn.getcompletion("DbDiff ", "cmdline")
 assert_equal({ "after_snap", "before_snap" }, diff_all, "DbDiff complete should list snapshots")
+
+-- :DbExport completion uses the same snapshot index as :DbShow-style
+-- commands. The fake CLI returns the same canned list.
+local export_all = vim.fn.getcompletion("DbExport ", "cmdline")
+assert_equal({ "after_snap", "before_snap" }, export_all, "DbExport complete should list snapshot names")
+local export_prefix = vim.fn.getcompletion("DbExport be", "cmdline")
+assert_equal({ "before_snap" }, export_prefix, "DbExport complete should filter by prefix")
 
 local path_all = vim.fn.getcompletion("DbPath ", "cmdline")
 assert_equal({ "after_snap", "before_snap" }, path_all, "DbPath complete should list snapshots for optional name")
