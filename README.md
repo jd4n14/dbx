@@ -617,6 +617,83 @@ Identificador seguro para archivo: letra o `_` inicial, luego letras/dígitos/`_
 - `diff` opera sobre **`data`**, no sobre el envelope completo; por tanto no
   reporta cambios de metadata como `created_at`, SQL o conexión.
 
+## CLI: `dbx export`
+
+Vuelca el `data` de un snapshot a CSV o JSON Lines, con un sidecar JSON de
+auditoría opcional. Pensado para compartir evidencia sin abrir DataGrip:
+un snapshot guarda el resultado en `.dbx/snapshots/`, y `dbx export` lo
+traduce a un formato portable que se puede pegar en un issue, un PR o un
+reporte.
+
+El comando es offline (sin red) y solo usa stdlib (`encoding/csv` para CSV;
+un objeto JSON por línea para JSONL). Las escrituras son atómicas: tempfile
++ `fsync` + `rename(2)` para evitar estados parciales. Cuando el sidecar
+está activo, se escribe **primero**, de modo que un estado parcial nunca
+afirma un `row_count` que el archivo de datos todavía no contiene.
+
+### Comandos
+
+```bash
+dbx export [--format csv|jsonl] [-o FILE] [--json|--no-json] <snapshot-id>
+```
+
+| Flag | Default | Descripción |
+|------|---------|-------------|
+| `--format` | `csv` | `csv` (RFC 4180 con header) o `jsonl` (un objeto por línea) |
+| `-o FILE` | `<snapshot-id>.<ext>` en cwd | Ruta de salida completa |
+| `--json` | ON | Escribe sidecar `<data>.meta.json` con metadata de auditoría |
+| `--no-json` | off | Desactiva el sidecar (gana sobre `--json`) |
+| `--dir` | `.dbx/snapshots/` | Directorio de snapshots |
+
+El sidecar **siempre** contiene solo metadata (nunca filas, SQL ni secretos):
+
+```json
+{
+  "version": "dbx.export/v1",
+  "snapshot_id": "before_split_order",
+  "connection": "local_wms",
+  "exported_at": "2026-07-19T15:27:44Z",
+  "row_count": 2,
+  "columns": ["id", "status", "tags"],
+  "format": "csv",
+  "dbx_version": "dbx 0.0.1"
+}
+```
+
+### Ejemplos
+
+```bash
+# CSV + sidecar (default): escribe ./before_split_order.csv + sidecar
+dbx export before_split_order
+
+# JSONL sin sidecar, ruta custom
+dbx export --format jsonl --no-json -o /tmp/before.jsonl before_split_order
+
+# Re-correr con sidecar explícito
+dbx export --format jsonl before_split_order
+```
+
+### Formato CSV
+
+- Header ordenado alfabéticamente (`encoding/csv`).
+- Celdas con coma, comilla o salto de línea se quotan según RFC 4180.
+- `null` → celda vacía; booleanos y números preservan tipo JSON; objetos
+  anidados se serializan como JSON dentro de la celda.
+
+### Formato JSONL
+
+- Una línea por fila del snapshot, terminada en `\n`.
+- Preserva tipos JSON (números, booleanos, `null`, strings, objetos,
+  arreglos). Los enteros grandes se mantienen como números JSON, no como
+  strings.
+
+### Neovim
+
+- `:DbExport <name>` corre `dbx export <name>` y notifica la ruta del CSV
+  creado (mismo estilo de notificación que `:DbSnapshot`).
+- cmdline completion contra el índice de snapshots (mismo `cmpl` que
+  `:DbShow` / `:DbDiff`).
+
 ## CLI: `dbx diff`
 
 Compara dos snapshots de forma estructural, sin depender del formato ni del
