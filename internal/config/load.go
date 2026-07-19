@@ -143,16 +143,55 @@ func validateAndNormalize(conn *Connection, lookup EnvLookup) error {
 	if driver == "" {
 		driver = "mysql"
 	}
-	if driver != "mysql" {
-		return fmt.Errorf("connection %q: unsupported driver %q (only mysql is supported)", conn.Name, driver)
+	switch driver {
+	case "mysql":
+		conn.Driver = driver
+	case "sqlite":
+		// Test-only driver: see Plan 006 and the internal/sqlite package.
+		// It exists so `go test ./...` exercises a real database/sql round
+		// trip without MySQL credentials. It is not a product surface:
+		// `dbx ddl` rejects it before any connection.
+		conn.Driver = driver
+	default:
+		return fmt.Errorf("connection %q: unsupported driver %q (only mysql and sqlite are supported)", conn.Name, driver)
 	}
-	conn.Driver = driver
 
 	if err := validateEnvLabel(conn.Env); err != nil {
 		return fmt.Errorf("connection %q: %w", conn.Name, err)
 	}
 
-	// Raw DSN: host/user/password/database not required; password fields ignored for auth.
+	// SQLite: DSN-only. Other credential fields are forbidden and
+	// password_env is intentionally ignored.
+	if conn.Driver == "sqlite" {
+		dsn := strings.TrimSpace(conn.DSN)
+		if dsn == "" {
+			return fmt.Errorf("connection %q: sqlite driver requires dsn", conn.Name)
+		}
+		if v := strings.TrimSpace(conn.Host); v != "" {
+			return fmt.Errorf("connection %q: sqlite driver does not allow host (got %q)", conn.Name, v)
+		}
+		if conn.Port != 0 {
+			return fmt.Errorf("connection %q: sqlite driver does not allow port (got %d)", conn.Name, conn.Port)
+		}
+		if v := strings.TrimSpace(conn.User); v != "" {
+			return fmt.Errorf("connection %q: sqlite driver does not allow user (got %q)", conn.Name, v)
+		}
+		if v := strings.TrimSpace(conn.Password); v != "" {
+			return fmt.Errorf("connection %q: sqlite driver does not allow password", conn.Name)
+		}
+		if v := strings.TrimSpace(conn.PasswordEnv); v != "" {
+			return fmt.Errorf("connection %q: sqlite driver does not allow password_env (got %q)", conn.Name, v)
+		}
+		if v := strings.TrimSpace(conn.Database); v != "" {
+			return fmt.Errorf("connection %q: sqlite driver does not allow database (got %q)", conn.Name, v)
+		}
+		conn.DSN = dsn
+		return nil
+	}
+
+	// MySQL: raw DSN takes precedence; host/user/password/database fields are
+	// not required when DSN is set. password_env is intentionally NOT
+	// resolved in that path (auth is in the DSN).
 	if strings.TrimSpace(conn.DSN) != "" {
 		conn.DSN = strings.TrimSpace(conn.DSN)
 		return nil

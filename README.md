@@ -408,6 +408,34 @@ go test ./internal/ddl/ -count=1 -v -run Integration
 
 Si `DBX_MYSQL_TEST_DSN` no está definido, el test de integración se **salta** (no falla el suite offline).
 
+### SQLite para pruebas (offline)
+
+Además del path opcional de MySQL, `dbx` reconoce un segundo driver solo
+para alimentar los tests de integración offline del paquete `query`
+(Plan 006): `sqlite`. No es un motor documentado para producción y **no se
+expone desde `dbx ddl`**, `dbx tables` ni `dbx columns` — su único propósito
+es ejercitar la ruta real de `database/sql` sin Docker ni credenciales.
+
+```yaml
+connections:
+  offline_tests:
+    driver: sqlite
+    dsn: "file:dbx_test?mode=memory&cache=shared"  # requerido; solo DSN
+    env: dev                                        # etiqueta arbitraria
+```
+
+Reglas de validación para `driver: sqlite`:
+
+- `dsn` es obligatorio. `host`, `port`, `user`, `password`, `password_env`
+  y `database` están **prohibidos** (forzar un error explícito evita
+  confusión entre credenciales MySQL y un DSN de SQLite).
+- `password_env` se ignora aunque exista en la env (no se mezcla con el DSN).
+- `dbx ddl` rechaza la conexión con `ddl only supports mysql` antes de
+  cualquier fetch. Tests sensibles pueden saltarlo con
+  `DBX_SQLITE_INTEGRATION=0`.
+- El driver `modernc.org/sqlite` es puro Go (sin CGo) y se registra como
+  `sqlite` vía blank import.
+
 ## CLI: schema browser (`dbx tables` / `dbx columns`)
 
 Inspeccionar el esquema no debe requerir un cliente visual. Estos dos comandos

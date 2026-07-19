@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -531,4 +532,173 @@ func TestFindConfigPathDiscoveryOrder(t *testing.T) {
 			t.Errorf("error should include project path: %v", err)
 		}
 	})
+}
+
+func TestSQLiteConnectionValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, `
+connections:
+  tests:
+    driver: sqlite
+    dsn: file:dbx_test?mode=memory&cache=shared
+    env: dev
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	conn, err := cfg.ConnectionWithLookup("tests", envMap(nil))
+	if err != nil {
+		t.Fatalf("Connection tests: %v", err)
+	}
+	if conn.Driver != "sqlite" {
+		t.Errorf("Driver = %q, want sqlite", conn.Driver)
+	}
+	if conn.DSN != "file:dbx_test?mode=memory&cache=shared" {
+		t.Errorf("DSN = %q", conn.DSN)
+	}
+}
+
+func TestSQLiteConnectionDSNTrimsWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, `
+connections:
+  tests:
+    driver: sqlite
+    dsn: "   file:dbx_test?mode=memory&cache=shared   "
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	conn, err := cfg.ConnectionWithLookup("tests", envMap(nil))
+	if err != nil {
+		t.Fatalf("Connection tests: %v", err)
+	}
+	if conn.DSN != "file:dbx_test?mode=memory&cache=shared" {
+		t.Errorf("DSN = %q, want trimmed", conn.DSN)
+	}
+}
+
+func TestSQLiteConnectionMissingDSN(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, `
+connections:
+  tests:
+    driver: sqlite
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	_, err = cfg.ConnectionWithLookup("tests", envMap(nil))
+	if err == nil {
+		t.Fatal("expected error for missing dsn")
+	}
+	if !strings.Contains(err.Error(), "sqlite") || !strings.Contains(err.Error(), "dsn") {
+		t.Errorf("error should mention sqlite/dsn, got %v", err)
+	}
+}
+
+func TestSQLiteConnectionForbiddenFields(t *testing.T) {
+	const yamlTemplate = `
+connections:
+  tests:
+    driver: sqlite
+    dsn: file:dbx_test?mode=memory&cache=shared
+%s
+`
+	cases := []struct {
+		name   string
+		extra  string
+		expect string
+	}{
+		{name: "host", extra: "    host: 127.0.0.1\n", expect: "host"},
+		{name: "port", extra: "    port: 3306\n", expect: "port"},
+		{name: "user", extra: "    user: root\n", expect: "user"},
+		{name: "password", extra: "    password: secret\n", expect: "password"},
+		{name: "password_env", extra: "    password_env: DBX_SQLITE_PW\n", expect: "password_env"},
+		{name: "database", extra: "    database: wms\n", expect: "database"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			writeFile(t, path, fmt.Sprintf(yamlTemplate, tt.extra))
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			_, err = cfg.ConnectionWithLookup("tests", envMap(map[string]string{
+				"DBX_SQLITE_PW": "would-leak-if-listed",
+			}))
+			if err == nil {
+				t.Fatalf("expected error for forbidden field %q", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.expect) {
+				t.Errorf("error should mention %q, got %v", tt.expect, err)
+			}
+			// password_env should NEVER trigger env resolution on a sqlite conn.
+			if strings.Contains(err.Error(), "would-leak-if-listed") {
+				t.Errorf("error leaked env value: %v", err)
+			}
+		})
+	}
+}
+
+func TestSQLiteConnectionDoesNotResolvePasswordEnv(t *testing.T) {
+	// Regression: a sqlite connection with password_env set must error on the
+	// field rejection (above) without ever inspecting the environment.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, `
+connections:
+  tests:
+    driver: sqlite
+    dsn: file:dbx_test?mode=memory&cache=shared
+    password_env: DBX_SQLITE_PW
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Lookup that would otherwise error with "is not set" if consulted.
+	_, err = cfg.ConnectionWithLookup("tests", envMap(nil))
+	if err == nil {
+		t.Fatal("expected forbidden field error")
+	}
+	if !strings.Contains(err.Error(), "password_env") {
+		t.Errorf("error should mention password_env, got %v", err)
+	}
+}
+
+// TestMySQLUnchangedAfterSQLiteAcceptance locks in that the MySQL validation
+// path is byte-identical to before this plan (no field drift).
+func TestMySQLUnchangedAfterSQLiteAcceptance(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, twoConnYAML)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c1, err := cfg.ConnectionWithLookup("local_wms", envMap(nil))
+	if err != nil {
+		t.Fatalf("Connection local_wms: %v", err)
+	}
+	if c1.Driver != "mysql" || c1.Port != 3306 || c1.Password != "secret" ||
+		c1.Host != "127.0.0.1" || c1.User != "root" || c1.Database != "wms" ||
+		c1.Env != "dev" {
+		t.Errorf("local_wms changed unexpectedly: %+v", c1)
+	}
+	c2, err := cfg.ConnectionWithLookup("staging_ro", envMap(nil))
+	if err != nil {
+		t.Fatalf("Connection staging_ro: %v", err)
+	}
+	if c2.Driver != "mysql" || c2.Port != 3306 || c2.Password != "ro-pass" {
+		t.Errorf("staging_ro changed unexpectedly: %+v", c2)
+	}
 }

@@ -11,9 +11,10 @@ the status after completion.
 - **Implemented and verified locally:** MySQL connection/config discovery,
   read-only `query`, pretty JSON conversion, `ddl`, snapshots (`save`, `list`,
   `show`, private last-result cache, and `--from-last`), structured snapshot
-  diff, bounded JSON paths, offline SQL danger analysis, and the minimal
-  Neovim client.
-- **Not implemented:** the optional SQLite test connector.
+  diff, bounded JSON paths, offline SQL danger analysis, the portable SQLite
+  test connector (Plan 006, offline-only), the schema browser (`dbx tables` /
+  `dbx columns`, Plan 007), the Neovim omnifunc SQL completion, and the
+  minimal Neovim client.
 - **Verification baseline:** `go test ./...`, `go vet ./...`, and
   `go build -o /tmp/dbx ./cmd/dbx` pass on the reviewed workspace. There is no
   repository CI configuration yet; it is deferred until the MVP commands land.
@@ -27,7 +28,7 @@ the status after completion.
 | [003](003-json-path-filter.md) | Filter result data by a bounded path syntax | P1 | M | 001 | DONE |
 | [004](004-danger-analysis.md) | Report dangerous SQL without executing it | P1 | M | — | DONE |
 | [005](005-neovim-mvp-client.md) | Expose the complete MVP through Neovim | P1 | M | 001, 002, 003, 004 | DONE |
-| [006](006-sqlite-test-connector.md) | Add a portable SQLite connector for integration tests | P2 | M | — | TODO |
+| [006](006-sqlite-test-connector.md) | Add a portable SQLite connector for integration tests | P2 | M | — | DONE |
 | [007](007-schema-browser-with-sql-completion.md) | Schema browser + SQL completion (`dbx tables` / `dbx columns`, `:DbTables` / `:DbColumns`, omnifunc) | P1 | M | — | DONE |
 
 ## Dependency notes

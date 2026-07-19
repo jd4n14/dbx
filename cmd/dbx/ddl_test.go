@@ -125,3 +125,35 @@ func TestRunDDL_InvalidTable(t *testing.T) {
 		t.Fatalf("stdout: %q", stdout.String())
 	}
 }
+
+// TestRunDDL_NonMySQLRejectedBeforeFetch pins the SQLite-only-for-tests
+// boundary: configuring a connection with driver: sqlite must NOT cause
+// `dbx ddl` to fall through to ddl.FetchConnection. The fetch fake must
+// never be invoked, and stdout must remain empty.
+func TestRunDDL_NonMySQLRejectedBeforeFetch(t *testing.T) {
+	cfg := writeTempConfig(t, `
+connections:
+  tests:
+    driver: sqlite
+    dsn: file:dbx_ddl_reject?mode=memory&cache=shared
+    env: dev
+`)
+	var stdout, stderr bytes.Buffer
+	err := runDDLCmd(
+		[]string{"--conn", "tests", "--table", "orders", "--config", cfg},
+		&stdout, &stderr,
+		func(ctx context.Context, conn config.Connection, table string) (string, error) {
+			t.Fatalf("fetch must not be called for non-mysql driver; got conn=%q table=%q", conn.Name, table)
+			return "", nil
+		},
+	)
+	if err == nil {
+		t.Fatal("expected non-mysql driver error")
+	}
+	if !strings.Contains(err.Error(), "ddl only supports mysql") {
+		t.Errorf("error should mention ddl-only-supports-mysql, got %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout must be empty for rejected connection, got %q", stdout.String())
+	}
+}

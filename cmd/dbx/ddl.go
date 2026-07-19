@@ -65,6 +65,14 @@ func runDDLCmd(args []string, stdout, stderr io.Writer, fetch ddlFetchFunc) erro
 		return err
 	}
 
+	// ddl is MySQL-specific (SHOW CREATE TABLE). SQLite is accepted in
+	// config so `go test ./...` can drive query integration tests offline,
+	// but it is NOT a documented production DDL target. Reject non-mysql
+	// drivers before any fetch/network/table validation.
+	if conn.Driver != "mysql" {
+		return fmt.Errorf("ddl only supports mysql (connection %q uses driver %q)", strings.TrimSpace(*connName), conn.Driver)
+	}
+
 	if fetch == nil {
 		fetch = ddl.FetchConnection
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/jd4n14/dbx/internal/db"
 	"github.com/jd4n14/dbx/internal/jsonutil"
 	"github.com/jd4n14/dbx/internal/mysql"
+	"github.com/jd4n14/dbx/internal/sqlite"
 )
 
 // DefaultQueryTimeout is the default budget for a single query execution
@@ -48,22 +49,43 @@ func Run(ctx context.Context, database db.DB, sqlText string) ([]byte, error) {
 	return out, nil
 }
 
-// RunConnection validates SQL first (before any network), opens a MySQL
-// connection, runs the query, and closes the DB.
+// RunConnection validates SQL first (before any network), opens a connection
+// appropriate for conn.Driver, runs the query, and closes the DB.
 //
 // Policy-before-Open is intentional so disallowed SQL never touches the server.
+//
+// The driver dispatch is intentionally minimal: each connector owns its own
+// DSN rules and database/sql registration. We do not call database/sql.Open
+// directly from this package; that would leak driver names into query code.
+// SQLite support exists only for offline integration tests (Plan 006); the
+// product remains MySQL-only for `query` (and `ddl`, which rejects non-mysql).
 func RunConnection(ctx context.Context, conn config.Connection, sqlText string) ([]byte, error) {
 	if err := ValidateQuery(sqlText); err != nil {
 		return nil, err
 	}
 
-	database, err := mysql.Open(ctx, conn)
+	database, err := openConnection(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
 	defer database.Close()
 
 	return Run(ctx, database, sqlText)
+}
+
+// openConnection selects the connector based on the normalized Driver field.
+// config.Connection already restricts Driver to mysql or sqlite, so an
+// unknown value here means the caller bypassed validation (possible from
+// direct test usage of RunConnection).
+func openConnection(ctx context.Context, conn config.Connection) (db.DB, error) {
+	switch conn.Driver {
+	case "", "mysql":
+		return mysql.Open(ctx, conn)
+	case "sqlite":
+		return sqlite.Open(ctx, conn)
+	default:
+		return nil, fmt.Errorf("unsupported driver %q", conn.Driver)
+	}
 }
 
 // scanAll reads every row into [][]any suitable for jsonutil.
