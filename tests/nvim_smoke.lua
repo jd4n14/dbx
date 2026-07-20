@@ -8,7 +8,7 @@ local function assert_equal(expected, actual, message)
   end
 end
 
-local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn", "DbExport" }
+local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn", "DbExport", "DbExplain", "DbExplainJson" }
 for _, name in ipairs(commands) do
   assert(vim.fn.exists(":" .. name) == 2, name .. " is not registered")
 end
@@ -103,6 +103,12 @@ vim.fn.writefile({
   "  diff) printf '@@ status @@\\n-old\\n+new\\n' ;;",
   "  snapshot) printf '/tmp/before.json\\n' ;;",
   "  export) printf '/tmp/before.csv\\n/tmp/before.csv.meta.json\\n' ;;",
+  "  explain)",
+  "    # Tabular mode: ASCII table with the canonical EXPLAIN columns.",
+  "    printf 'id  select_type  table  type  possible_keys  key  key_len  ref  rows  Extra\\n'",
+  "    printf '--  -----------  -----  ----  -------------  ---  -------  ---  ----  -----\\n'",
+  "    printf '1   SIMPLE       orders ALL  NULL            NULL NULL     NULL 1234  Using where\\n'",
+  "    ;;",
   "  fail) printf 'fake failure\\n' >&2; exit 7 ;;",
   "  danger)",
   "    case \"$3\" in",
@@ -165,6 +171,23 @@ local function close_extra_windows()
   local cur = vim.api.nvim_get_current_win()
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     if win ~= cur then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
+end
+
+-- Resolve the scratch buffer number for a given dbx result kind. Hoisted
+-- up so the new explain smoke tests below can use it before the later
+-- helper block.
+local function result_bufnr(kind)
+  return vim.fn.bufnr("dbx://" .. kind)
+end
+
+-- Collapse all split windows except the current one. Hoisted up so the
+-- new explain smoke tests below can call it before its later definition.
+local function close_all_windows()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if win ~= vim.api.nvim_get_current_win() then
       pcall(vim.api.nvim_win_close, win, true)
     end
   end
@@ -244,6 +267,85 @@ vim.cmd("DbExport before")
 wait_for("export before")
 assert(notifications[#notifications].message:find("Export guardado", 1, true), ":DbExport should notify success path: " .. notifications[#notifications].message)
 assert(notifications[#notifications].message:find("before.csv", 1, true), ":DbExport notification should include data path")
+
+-- :DbExplain runs `dbx explain --conn <conn>` with SQL from the buffer
+-- (statement under the cursor). The result lands in a tsv scratch buffer.
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select * from orders where id = 1;" })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+clear_log()
+vim.cmd("DbExplain")
+wait_for("explain --conn local_wms")
+assert_log_contains("explain --conn local_wms", ":DbExplain must forward --conn local_wms")
+assert_log_contains("stdin=select * from orders", ":DbExplain must pipe the statement under the cursor")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("explain")), ":DbExplain must populate a result buffer")
+assert_equal("explain", vim.b[result_bufnr("explain")].dbx_result, ":DbExplain buffer must be tagged")
+local explain_lines = vim.api.nvim_buf_get_lines(result_bufnr("explain"), 0, -1, false)
+assert(explain_lines[1]:find("select_type"), ":DbExplain buffer must contain the canonical header: " .. vim.inspect(explain_lines))
+assert(explain_lines[2]:find("^--"), ":DbExplain buffer must contain a separator line: " .. vim.inspect(explain_lines))
+close_all_windows()
+
+-- :DbExplain with an explicit connection arg must override the default.
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+clear_log()
+vim.cmd("DbExplain override_conn")
+wait_for("explain --conn override_conn")
+assert_log_contains("explain --conn override_conn", ":DbExplain must honor connection arg")
+close_all_windows()
+
+-- :DbExplainJson sends --json. When the buffer is unnamed, no -o is passed.
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+clear_log()
+vim.cmd("DbExplainJson")
+wait_for("explain --json")
+assert_log_contains("explain --json --conn local_wms", ":DbExplainJson must forward --json + --conn")
+assert(not log_text():find("explain --json --conn local_wms -o", 1, true), ":DbExplainJson on an unnamed buffer must not pass -o")
+close_all_windows()
+
+-- :DbExplainJson on a file-backed buffer derives -o from the buffer path.
+require("dbx").setup({ executable = fake, connection = "local_wms", root = neutral })
+vim.cmd.edit(vim.fn.fnameescape(tmp .. "/explain-input.sql"))
+vim.fn.writefile({ "select * from orders;" }, tmp .. "/explain-input.sql")
+vim.cmd.edit(vim.fn.fnameescape(tmp .. "/explain-input.sql"))
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+clear_log()
+vim.cmd("DbExplainJson")
+wait_for("explain --json")
+assert_log_contains(
+  "explain --json --conn local_wms -o " .. tmp .. "/explain-input.sql.explain.json",
+  ":DbExplainJson on a file buffer must forward -o alongside the buffer file"
+)
+close_all_windows()
+
+-- DbExplain / DbExplainJson cmdline completion is connection names.
+-- Project-scoped config (mirrors the `complete_project` pattern used by
+-- :DbRun/:DbExport/:DbDiff/:DbPath/:DbConn below) so the test does not
+-- depend on the user's home `~/.config/dbx/config.yaml` shape.
+local complete_explain_project = tmp .. "/complete-explain-project"
+vim.fn.mkdir(complete_explain_project .. "/.dbx", "p")
+local complete_explain_cfg = complete_explain_project .. "/.dbx/config.yaml"
+vim.fn.writefile({
+  "connections:",
+  "  local_wms:",
+  "    host: 127.0.0.1",
+  "    user: root",
+  "    database: wms",
+  "  prod_ro:",
+  "    host: 127.0.0.1",
+  "    user: ro",
+  "    database: wms",
+}, complete_explain_cfg)
+require("dbx").setup({ executable = fake, connection = "local_wms", root = complete_explain_project })
+local explain_completion = vim.fn.getcompletion("DbExplain ", "cmdline")
+table.sort(explain_completion)
+assert_equal({ "local_wms", "prod_ro" }, explain_completion, "DbExplain completion should list configured connections")
+local explain_json_completion = vim.fn.getcompletion("DbExplainJson ", "cmdline")
+table.sort(explain_json_completion)
+assert_equal({ "local_wms", "prod_ro" }, explain_json_completion, "DbExplainJson completion should list configured connections")
 
 local before_notifications = #notifications
 require("dbx").setup({ executable = tmp .. "/missing", connection = "local_wms", root = neutral })
@@ -502,21 +604,9 @@ require("dbx").setup({ executable = fake, connection = "local_wms", root = ux })
 -- plain `DbRun` uses the same connection this block just set up.
 vim.cmd("DbConn local_wms")
 
-local function close_all_windows()
-  for _, win in ipairs(vim.api.nvim_list_wins()) do
-    if win ~= vim.api.nvim_get_current_win() then
-      pcall(vim.api.nvim_win_close, win, true)
-    end
-  end
-end
-
 -- Earlier tests accumulated split windows; collapse them so result UX tests
 -- have headroom for new splits in a small headless nvim (default 24 lines).
 close_all_windows()
-
-local function result_bufnr(kind)
-  return vim.fn.bufnr("dbx://" .. kind)
-end
 
 -- Default: horizontal botright split, focus on result, vim.b.dbx_result set.
 vim.cmd.enew()

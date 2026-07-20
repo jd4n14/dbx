@@ -39,6 +39,8 @@ func run(args []string) error {
 		return runHistory(args[1:])
 	case "export":
 		return runExport(args[1:])
+	case "explain":
+		return runExplain(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println(Version)
 		return nil
@@ -68,6 +70,7 @@ Commands:
   danger     Analyze SQL for dangerous statements
   history    List / show / clear recent successful dbx query runs
   export     Dump a snapshot to CSV or JSONL (with optional JSON sidecar)
+  explain    Pretty-print EXPLAIN <SQL> as a table or JSON plan (with optional sidecar)
   version    Print version
   help       Show this help
 
@@ -89,5 +92,7 @@ Examples:
   dbx history clear
   dbx export --format csv -o /tmp/before.csv before_split_order
   dbx export --format jsonl --no-json after_split_order
+  dbx explain --conn local_wms "SELECT * FROM orders WHERE status = 'pending'"
+  dbx explain --json --conn local_wms -o /tmp/plan.json "SELECT 1"
 `)
 }

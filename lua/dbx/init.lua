@@ -248,6 +248,7 @@ local config_flag_commands = {
   query = true,
   ddl = true,
   danger = true,
+  explain = true,
 }
 
 --- Insert `--config <path>` after the subcommand when supported, a project
@@ -906,6 +907,69 @@ local function register_commands()
     nargs = "?",
     complete = complete_snapshots,
     desc = "Exporta un snapshot a CSV (con sidecar JSON por defecto)",
+  })
+
+  -- :DbExplain mirrors :DbRun: SQL comes from the buffer (statement under
+  -- the cursor or the active range). Connection name can be supplied as
+  -- the first arg; falls back to the session/default connection. Plan 009
+  -- default is tabular to the result buffer.
+  vim.api.nvim_create_user_command("DbExplain", function(opts)
+    local conn = connection(opts.args)
+    if not conn then
+      return
+    end
+    local source = dbrun_source(opts)
+    if source == nil then
+      return
+    end
+    run({ "explain", "--conn", conn }, {
+      stdin = source,
+      kind = "explain",
+      filetype = "tsv",
+    })
+  end, {
+    nargs = "?",
+    range = true,
+    complete = complete_connections,
+    desc = "EXPLAIN del statement bajo el cursor (tabla)",
+  })
+
+  -- :DbExplainJson forces EXPLAIN FORMAT=JSON. SQL comes from the buffer
+  -- (statement under the cursor or the active range). When the current
+  -- buffer is a file on disk, the JSON output is written next to it
+  -- (`<file>.explain.json`) so the sidecar can live alongside — matching
+  -- the plan's "sidecar written next to the buffer's file" rule. Result
+  -- buffer mirrors the file path for easy diffing.
+  vim.api.nvim_create_user_command("DbExplainJson", function(opts)
+    local conn = connection(opts.args)
+    if not conn then
+      return
+    end
+    local source = dbrun_source(opts)
+    if source == nil then
+      return
+    end
+    local out_arg = nil
+    local bufnr = vim.api.nvim_get_current_buf()
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if name and name ~= "" and vim.fn.filereadable(name) == 1 then
+      out_arg = name .. ".explain.json"
+    end
+    local argv = { "explain", "--json", "--conn", conn }
+    if out_arg then
+      table.insert(argv, "-o")
+      table.insert(argv, out_arg)
+    end
+    run(argv, {
+      stdin = source,
+      kind = "explain_json",
+      filetype = "json",
+    })
+  end, {
+    nargs = "?",
+    range = true,
+    complete = complete_connections,
+    desc = "EXPLAIN FORMAT=JSON del statement bajo el cursor",
   })
 
   vim.api.nvim_create_user_command("DbDiff", function(opts)
