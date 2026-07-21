@@ -1,0 +1,107 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/jd4n14/dbx/internal/config"
+	"github.com/jd4n14/dbx/internal/ddl"
+	"github.com/jd4n14/dbx/internal/introspect"
+)
+
+// tableSizeFunc fetches size metadata for a table on a resolved
+// connection. Production uses introspect.TableSizeConnection; tests
+// inject fakes for stdout purity.
+type tableSizeFunc func(ctx context.Context, conn config.Connection, table string) (introspect.TableSize, error)
+
+func runTableSize(args []string) error {
+	return runTableSizeCmd(args, os.Stdout, os.Stderr, introspect.TableSizeConnection)
+}
+
+// runTableSizeCmd implements `dbx table-size`:
+//
+//	--conn   required named connection
+//	--table  required simple table identifier
+//	--config optional config path (else discovery / DBX_CONFIG)
+//
+// Default stdout is a single pretty JSON object (one row). `rows` is an
+// InnoDB estimate — see README for the explicit caveat.
+func runTableSizeCmd(args []string, stdout, stderr io.Writer, fetch tableSizeFunc) error {
+	fs := flag.NewFlagSet("table-size", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	connName := fs.String("conn", "", "named connection from config")
+	table := fs.String("table", "", "table name (simple identifier)")
+	configPath := fs.String("config", "", "path to config file (optional)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(*connName) == "" {
+		return fmt.Errorf("--conn is required")
+	}
+	tableName := strings.TrimSpace(*table)
+	if tableName == "" {
+		return fmt.Errorf("--table is required")
+	}
+	if err := ddl.ValidateTableName(tableName); err != nil {
+		return err
+	}
+
+	path, err := config.FindConfigPath(*configPath, os.Getenv, "", "")
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	conn, err := cfg.Connection(*connName)
+	if err != nil {
+		return err
+	}
+
+	if conn.Driver != "mysql" {
+		return fmt.Errorf("table-size only supports mysql (connection %q uses driver %q)", strings.TrimSpace(*connName), conn.Driver)
+	}
+
+	if fetch == nil {
+		fetch = introspect.TableSizeConnection
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), introspect.DefaultTimeout+connectBudget)
+	defer cancel()
+
+	out, err := fetch(ctx, conn, tableName)
+	if err != nil {
+		// Surface ErrTableNotFound as a clean, structured error so the
+		// Lua/CLI integration can distinguish it from connection drops.
+		if errors.Is(err, introspect.ErrTableNotFound) {
+			return fmt.Errorf("table %q not found in current database", tableName)
+		}
+		return err
+	}
+
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("encode json: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		return fmt.Errorf("encode json: %w", err)
+	}
+	buf.WriteByte('\n')
+
+	if _, err := stdout.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("write stdout: %w", err)
+	}
+	return nil
+}
