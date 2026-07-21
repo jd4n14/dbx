@@ -66,3 +66,63 @@ func ListColumnsConnection(ctx context.Context, conn config.Connection, table, l
 
 	return ListColumns(queryCtx, database, table, like)
 }
+
+// ListIndexesConnection validates the table name, opens the connection,
+// applies the per-call timeout, and delegates to ListIndexes. Used by
+// `dbx indexes` (Plan 012).
+func ListIndexesConnection(ctx context.Context, conn config.Connection, table string) ([]Index, error) {
+	if err := ddl.ValidateTableName(table); err != nil {
+		return nil, err
+	}
+
+	database, err := mysql.Open(ctx, conn)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer database.Close()
+
+	queryCtx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+
+	return ListIndexes(queryCtx, database, table)
+}
+
+// ListForeignKeysConnection validates the table name, opens the
+// connection, applies the per-call timeout, and delegates to
+// ListForeignKeys. Used by `dbx fk` (Plan 012).
+func ListForeignKeysConnection(ctx context.Context, conn config.Connection, table string) ([]ForeignKey, error) {
+	if err := ddl.ValidateTableName(table); err != nil {
+		return nil, err
+	}
+
+	database, err := mysql.Open(ctx, conn)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer database.Close()
+
+	queryCtx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+
+	return ListForeignKeys(queryCtx, database, table)
+}
+
+// TableSizeConnection validates the table name, opens the connection,
+// applies the per-call timeout, and delegates to GetTableSize. Used by
+// `dbx table-size` (Plan 012).
+func TableSizeConnection(ctx context.Context, conn config.Connection, table string) (TableSize, error) {
+	if err := ddl.ValidateTableName(table); err != nil {
+		return TableSize{}, err
+	}
+
+	database, err := mysql.Open(ctx, conn)
+	if err != nil {
+		return TableSize{}, fmt.Errorf("connect: %w", err)
+	}
+	defer database.Close()
+
+	queryCtx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+
+	return GetTableSize(queryCtx, database, table)
+}

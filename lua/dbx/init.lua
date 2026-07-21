@@ -872,6 +872,39 @@ local function register_commands()
     desc = "Lista columnas de una tabla (--table implícito)",
   })
 
+  -- :DbIndexes, :DbFk, :DbTableSize are Plan 012 siblings of :DbColumns.
+  -- They all share the same shape: optional table arg, fall back to <cword>,
+  -- tag the result buffer with a kind matching the dbx_result convention.
+  -- The CLI emits pretty JSON by default (these are nested / composite
+  -- structures that do not map cleanly to TSV); we use filetype = "tsv" so
+  -- the existing result_buffer reuse path keeps working — JSON is a valid
+  -- TSV byte stream and Vim highlights it as plain text by default.
+  local function schema_table_command(name, sub, kind, friendly)
+    vim.api.nvim_create_user_command(name, function(opts)
+      local conn = connection()
+      if not conn then
+        return
+      end
+      local arg = vim.trim(opts.args)
+      local table_name = arg
+      if table_name == "" then
+        table_name = vim.fn.expand("<cword>")
+      end
+      if table_name == "" then
+        notify(name .. " requiere una tabla o una palabra bajo el cursor")
+        return
+      end
+      run({ sub, "--conn", conn, "--table", table_name }, { kind = kind, filetype = "tsv" })
+    end, {
+      nargs = "?",
+      desc = friendly,
+    })
+  end
+
+  schema_table_command("DbIndexes", "indexes", "indexes", "Lista índices de una tabla")
+  schema_table_command("DbFk", "fk", "fk", "Lista foreign keys de una tabla")
+  schema_table_command("DbTableSize", "table-size", "table_size", "Tamaño / row estimate / engine de una tabla")
+
   vim.api.nvim_create_user_command("DbSnapshot", function(opts)
     local name = vim.trim(opts.args)
     if name == "" then
