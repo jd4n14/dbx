@@ -291,6 +291,9 @@ echo 'select 1 as id, "{\"a\":1}" as metadata' | dbx query --conn local_wms
 # Config explícito
 echo 'show tables' | dbx query --conn local_wms --config /path/to/config.yaml
 
+# Cap de filas: limita el resultado a N filas y añade envelope de truncación
+echo 'select * from orders' | dbx query --conn local_wms --max-rows 50
+
 # Fallos: exit ≠ 0, mensaje en stderr (`error: …`), sin JSON parcial en stdout
 echo 'delete from orders' | dbx query --conn local_wms
 ```
@@ -367,6 +370,46 @@ Flags:
 |------|-----------|-------------|
 | `--conn` | sí | Nombre de la conexión en el YAML |
 | `--config` | no | Ruta al config (si no, orden de descubrimiento arriba) |
+| `--max-rows` | no | Tope de filas devueltas (default `0` = ilimitado). Cuando es `>0`, la salida deja de ser el array pretty y pasa a ser un envelope con metadata de truncación; ver "Envelope de `--max-rows`" abajo. |
+
+### Envelope de `--max-rows`
+
+`--max-rows N` reescribe el SQL agregando `LIMIT N+1` server-side y, cuando
+se detecta que el servidor devolvió más filas de las pedidas, marca el
+resultado como truncado y descarta la fila centinela. Es la única bandera
+de `dbx query` que cambia la forma del stdout: el array pretty se
+envuelve en un envelope con campos estables.
+
+```bash
+echo 'select * from orders' | dbx query --conn local_wms --max-rows 50
+```
+
+Envelope (pretty, indent 2 + newline final):
+
+```json
+{
+  "type": "query",
+  "truncated": false,
+  "row_count": 50,
+  "max_rows": 50,
+  "data": [ {...}, {...} ]
+}
+```
+
+- `truncated` es `true` cuando el servidor tenía más filas que el límite
+  solicitado; en ese caso `data` lleva exactamente `max_rows` entradas y
+  `row_count == max_rows`.
+- `max_rows` es siempre el valor pedido (o `null` si la bandera se omitió,
+  pero esa combinación no se emite — omitir la bandera conserva el array
+  pretty sin envelope).
+- `data` es un array JSON pretty de filas (mismo formato que el stdout
+  clásico sin la bandera).
+- Sin la bandera, el stdout y `.dbx/last.json` siguen siendo exactamente
+  el array pretty de filas: el contrato con clientes existentes
+  (`dbx export`, el render del cliente Neovim, `dbx diff`) no cambia.
+- Si el query ya trae un `LIMIT` propio, combinarlo con `--max-rows`
+  producirá un error de sintaxis SQL: la inyección del `LIMIT` es
+  intencionalmente naive en esta primera versión.
 
 ### Política de SQL (MVP)
 
@@ -389,7 +432,7 @@ Solo se permiten statements de **lectura/inspección**. La allowlist es la **bar
 
 - Detección multi-statement **naive**: un `;` dentro de literales/strings puede dar **falso positivo** y rechazar el query (fail-closed a propósito).
 - La allowlist es heurística (no un parser SQL completo). Aún pueden pasar formas con side effects que empiezan por `SELECT` (p. ej. `SELECT … INTO OUTFILE`, `SELECT … FOR UPDATE`, `SELECT … INTO @var`).
-- Result sets **sin límite de filas** en el MVP: queries enormes pueden consumir mucha memoria/tiempo.
+- Result sets **sin límite de filas** en el MVP: queries enormes pueden consumir mucha memoria/tiempo (mitigado por `--max-rows`, ver arriba).
 - Tipos MySQL raros (BIT, GEOMETRY, etc.) se mapean de forma conservadora; binario no-UTF-8 → base64.
 - Sin multi-statement, sin PostgreSQL, sin Neovim en este slice.
 
