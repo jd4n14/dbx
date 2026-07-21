@@ -35,7 +35,7 @@ after completion.
 | [007](007-schema-browser-with-sql-completion.md) | Schema browser + SQL completion (`dbx tables` / `dbx columns`, `:DbTables` / `:DbColumns`, omnifunc) | P1 | M | — | DONE |
 | [008](008-export-snapshots-csv-jsonl.md) | Snapshot CSV / JSONL export with `--json` sidecar (`dbx export`, `:DbExport`) | P2 | M | 001 | DONE |
 | [009](009-explain-pretty-printer.md) | Pretty-print `EXPLAIN` output (`dbx explain`, `:DbExplain`) | P2 | M | 001 | DONE |
-| [010](010-ping-and-status-commands.md) | `dbx ping` / `dbx status` — connection health and metadata | P1 | S | — | DONE |
+| [010](010-ping-and-status-commands.md) | `dbx ping` / `dbx status` — connection health and metadata | P1 | S | — | DONE ([PR #13](https://github.com/jd4n14/dbx/pull/13)) |
 | [011](011-query-row-limit-with-truncation-metadata.md) | `--max-rows N` for `dbx query` with truncation envelope | P1 | M | 005 | TODO |
 | [012](012-schema-inspection-siblings.md) | `dbx indexes` / `dbx fk` / `dbx table-size` + `:Db*` mirrors | P2 | M | 007 | TODO |
 | [013](013-history-rerun-and-picker-ux.md) | `:DbHistoryRun <idx>` + opt-in `history_picker` UX | P2 | M | — | TODO |
