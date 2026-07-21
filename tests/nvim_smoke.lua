@@ -8,7 +8,7 @@ local function assert_equal(expected, actual, message)
   end
 end
 
-local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn", "DbExport", "DbExplain", "DbExplainJson" }
+local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn", "DbExport", "DbExplain", "DbExplainJson", "DbIndexes", "DbFk", "DbTableSize" }
 for _, name in ipairs(commands) do
   assert(vim.fn.exists(":" .. name) == 2, name .. " is not registered")
 end
@@ -119,6 +119,9 @@ vim.fn.writefile({
   "      die) printf 'fake danger failure\\n' >&2; exit 11 ;;",
   "      *) printf '{\"type\":\"danger\",\"safe\":true,\"severity\":\"safe\",\"findings\":[]}\\n' ;;",
   "    esac ;;",
+  "  indexes) printf '[{\"name\":\"PRIMARY\",\"non_unique\":false,\"seq_in_index\":1,\"column_name\":\"id\",\"collation\":\"A\",\"cardinality\":42,\"index_type\":\"BTREE\"}]\\n' ;;",
+  "  fk) printf '[{\"name\":\"fk_a\",\"column\":\"a_id\",\"referenced_schema\":\"wms\",\"referenced_table\":\"a\",\"referenced_column\":\"id\",\"update_rule\":\"RESTRICT\",\"delete_rule\":\"CASCADE\"}]\\n' ;;",
+  "  table-size) printf '{\"rows\":42,\"data_bytes\":1024,\"index_bytes\":256,\"data_free_bytes\":0,\"auto_increment\":43,\"collation\":\"utf8mb4_unicode_ci\",\"create_time\":\"2026-07-21T22:00:00Z\",\"update_time\":\"2026-07-21T22:00:00Z\",\"engine\":\"InnoDB\"}\\n' ;;",
   "  *) printf '[{\"ok\":true}]\\n' ;;",
   "esac",
 }, fake)
@@ -1032,6 +1035,35 @@ clear_log()
 vim.cmd("DbColumns")
 wait_for("columns --conn local_wms --table orders")
 assert_log_contains("--table orders", "DbColumns without arg should default to <cword>")
+close_all_windows()
+
+-- Plan 012 siblings: :DbIndexes, :DbFk, :DbTableSize. Same shape as
+-- :DbColumns (optional table arg, falls back to <cword>). Each opens a
+-- result buffer tagged with the matching dbx_result kind.
+require("dbx").setup({ executable = fake, connection = "local_wms", root = schema_project })
+
+clear_log()
+vim.cmd("DbIndexes orders")
+wait_for("indexes --conn local_wms --table orders")
+assert_log_contains("indexes --conn local_wms --table orders", ":DbIndexes must forward --table")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("indexes")), ":DbIndexes result buffer must exist")
+assert_equal("indexes", vim.b[result_bufnr("indexes")].dbx_result, ":DbIndexes buffer must be tagged")
+close_all_windows()
+
+clear_log()
+vim.cmd("DbFk orders")
+wait_for("fk --conn local_wms --table orders")
+assert_log_contains("fk --conn local_wms --table orders", ":DbFk must forward --table")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("fk")), ":DbFk result buffer must exist")
+assert_equal("fk", vim.b[result_bufnr("fk")].dbx_result, ":DbFk buffer must be tagged")
+close_all_windows()
+
+clear_log()
+vim.cmd("DbTableSize orders")
+wait_for("table-size --conn local_wms --table orders")
+assert_log_contains("table-size --conn local_wms --table orders", ":DbTableSize must forward --table")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("table_size")), ":DbTableSize result buffer must exist")
+assert_equal("table_size", vim.b[result_bufnr("table_size")].dbx_result, ":DbTableSize buffer must be tagged")
 close_all_windows()
 
 -- Tables completion: stub omnifunc not needed; cmdline completion uses the

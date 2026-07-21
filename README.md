@@ -486,10 +486,148 @@ dbx columns --conn local_wms --table orders --like id
 - JSON: cada columna es un objeto con `default: null` cuando MySQL devolvió NULL — el cliente Lua lo trata como ausente.
 - Validación y contratos idénticos a `dbx ddl` (incluida la regla `--table` ASCII).
 
+## CLI: schema inspection siblings (`dbx indexes` / `dbx fk` / `dbx table-size`)
+
+Después de `dbx tables` y `dbx columns`, las tres preguntas que siguen en una sesión de debugging de backend son "¿qué índices tiene?", "¿a qué tablas apunta esta FK?" y "¿de qué tamaño es esta tabla?". `dbx` ahora tiene comandos dedicados para cada una, basados en las tablas canónicas de `information_schema` (la única vez que `dbx` las toca — `dbx columns` y `dbx tables` siguen usando `SHOW`).
+
+Los tres comandos son **MySQL-only** (sqlite es una válvula de pruebas offline y se rechaza aquí igual que en `dbx ddl`).
+
+### `dbx indexes`
+
+Lista los índices de una tabla con `information_schema.STATISTICS`. Una fila por (índice, columna), ordenada por `INDEX_NAME` y `SEQ_IN_INDEX`, así los índices compuestos salen juntos en orden. Default: pretty JSON.
+
+```bash
+dbx indexes --conn local_wms --table orders
+dbx indexes --conn local_wms --table order_items
+```
+
+```json
+[
+  {
+    "name": "PRIMARY",
+    "non_unique": false,
+    "seq_in_index": 1,
+    "column_name": "id",
+    "collation": "A",
+    "cardinality": 1234,
+    "index_type": "BTREE"
+  },
+  {
+    "name": "idx_status_created",
+    "non_unique": true,
+    "seq_in_index": 1,
+    "column_name": "status",
+    "collation": "A",
+    "cardinality": 3,
+    "index_type": "BTREE"
+  },
+  {
+    "name": "idx_status_created",
+    "non_unique": true,
+    "seq_in_index": 2,
+    "column_name": "created_at",
+    "collation": "A",
+    "cardinality": 800,
+    "index_type": "BTREE"
+  }
+]
+```
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--conn` | sí | Conexión nombrada en el YAML |
+| `--table` | sí | Nombre simple de tabla (validado con `ddl.ValidateTableName`) |
+| `--config` | no | Ruta al config (mismo discovery que `query`) |
+
+- Salida: pretty JSON, una fila por (índice, columna).
+- `cardinality` es **aproximada** (MySQL la recalcula por muestreo). `collation` puede ser `"A"`, `"D"` o vacía (índices sin orden: `FULLTEXT`, `HASH`).
+- Tablas sin índices: `[]`.
+- `information_schema` es MySQL-only; sqlite se rechaza con `indexes only supports mysql`.
+
+### `dbx fk`
+
+Lista las foreign keys salientes de una tabla uniendo `KEY_COLUMN_USAGE` con `REFERENTIAL_CONSTRAINTS` (filtrando filas con `REFERENCED_TABLE_NAME IS NOT NULL`). Una fila por (constraint, columna) — las FK compuestas salen ordenadas por `ORDINAL_POSITION` para poder reconstruir la clave agrupando por `name`.
+
+```bash
+dbx fk --conn local_wms --table orders
+dbx fk --conn local_wms --table order_items
+```
+
+```json
+[
+  {
+    "name": "fk_orders_customer",
+    "column": "customer_id",
+    "referenced_schema": "wms",
+    "referenced_table": "customers",
+    "referenced_column": "id",
+    "update_rule": "RESTRICT",
+    "delete_rule": "CASCADE"
+  }
+]
+```
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--conn` | sí | Conexión nombrada en el YAML |
+| `--table` | sí | Nombre simple de tabla |
+| `--config` | no | Ruta al config |
+
+- Salida: pretty JSON, una fila por (constraint, columna).
+- Self-references (`parent_id → id` en la misma tabla) salen con `referenced_table == table`.
+- Tablas sin FKs: `[]`.
+- `information_schema` es MySQL-only; sqlite se rechaza con `fk only supports mysql`.
+
+### `dbx table-size`
+
+Tamaño, engine y estimación de filas de una tabla desde `information_schema.TABLES`. Devuelve un objeto (no un array) con la metadata física de la tabla.
+
+```bash
+dbx table-size --conn local_wms --table orders
+```
+
+```json
+{
+  "rows": 1234,
+  "data_bytes": 16384,
+  "index_bytes": 4096,
+  "data_free_bytes": 0,
+  "auto_increment": 1235,
+  "collation": "utf8mb4_unicode_ci",
+  "create_time": "2026-07-01T12:00:00Z",
+  "update_time": "2026-07-21T22:00:00Z",
+  "engine": "InnoDB"
+}
+```
+
+| Flag | Requerido | Descripción |
+|------|-----------|-------------|
+| `--conn` | sí | Conexión nombrada en el YAML |
+| `--table` | sí | Nombre simple de tabla |
+| `--config` | no | Ruta al config |
+
+- Salida: pretty JSON, un objeto.
+- **`rows` es un estimate** de InnoDB (`information_schema.TABLES.TABLE_ROWS`) y puede diferir de `COUNT(*)` por orden de magnitud en tablas activas. Para conteos exactos usa `dbx query --conn <c> "SELECT COUNT(*) FROM <tabla>"` — el resultado will respeta el límite de filas de Plan 011 si está activo.
+- `auto_increment` puede ser `null` si la tabla no usa AUTO_INCREMENT; `create_time` / `update_time` pueden ser `null` para tablas internas de `information_schema`.
+- Tabla inexistente: error `table <name> not found in current database` (exit ≠ 0).
+- `information_schema` es MySQL-only; sqlite se rechaza con `table-size only supports mysql`.
+
+### Comandos Neovim
+
+- `:DbIndexes [tabla]`, `:DbFk [tabla]`, `:DbTableSize [tabla]` (con `<cword>` como fallback) abren un buffer `tsv` con el JSON devuelto por la CLI; el buffer queda etiquetado con `dbx_result = "indexes"` / `"fk"` / `"table_size"` para que otros plugins puedan identificarlo.
+
+### Limitaciones (MVP)
+
+- Solo MySQL (sqlite test-only se rechaza).
+- Los queries a `information_schema` están hardcodeados en `internal/introspect/`; nunca pasan por `dbx danger` ni por la allowlist de SQL — son lecturas puras.
+- Sin nombres calificados `schema.table` (mismo límite que `dbx ddl`).
+- Para una FK con muchos `ORDINAL_POSITION`, el consumidor debe agrupar filas por `name` para reconstruir la clave.
+
 ### Comandos Neovim y omnifunc SQL
 
 - `:DbTables [patrón]` abre un buffer `tsv` etiquetado `dbx_result = "tables"` con un nombre por línea (igual que `dbx tables`). Acepta `--like` implícito.
 - `:DbColumns [tabla]` (con `<cword>` como fallback) abre el TSV de columnas en un buffer `tsv` etiquetado `dbx_result = "columns"`.
+- `:DbIndexes [tabla]`, `:DbFk [tabla]`, `:DbTableSize [tabla]` abren un buffer `tsv` (con JSON pretty como contenido) etiquetado `dbx_result = "indexes"` / `"fk"` / `"table_size"`. Mismo fallback de `<cword>` que `:DbColumns`.
 - `setup({ sql_omnifunc = true })` (default) instala `dbx.omnifunc` en buffers `sql` mediante un autocmd `FileType`. `<C-X><C-O>` (y `nvim-cmp` con un source que apunte a `dbx.omnifunc`) ofrece nombres de tablas cuando no hay `FROM`/`UPDATE`/`INSERT INTO` cerca del cursor y nombres de columnas para la tabla más cercana a la izquierda del cursor. Para desactivarlo: `setup({ sql_omnifunc = false })`.
 
 ## CLI: `dbx ddl` (MySQL)

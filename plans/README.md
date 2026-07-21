@@ -15,8 +15,10 @@ the status after completion.
   test connector (Plan 006, offline-only), the schema browser (`dbx tables` /
   `dbx columns`, Plan 007), the Neovim omnifunc SQL completion, snapshot
   export to CSV / JSON Lines with `--json` sidecar default ON (Plan 008),
-  the `EXPLAIN` pretty-printer (`dbx explain`, `:DbExplain`, Plan 009), and
-  the minimal Neovim client.
+  the `EXPLAIN` pretty-printer (`dbx explain`, `:DbExplain`, Plan 009), the
+  schema inspection siblings (`dbx indexes` / `dbx fk` / `dbx table-size`,
+  `:DbIndexes` / `:DbFk` / `:DbTableSize`, Plan 012), and the minimal Neovim
+  client.
 - **Verification baseline:** `go test ./...`, `go vet ./...`, and
   `go build -o /tmp/dbx ./cmd/dbx` pass on the reviewed workspace. There is no
   repository CI configuration yet; it is deferred until the MVP commands land.
@@ -34,6 +36,7 @@ the status after completion.
 | [007](007-schema-browser-with-sql-completion.md) | Schema browser + SQL completion (`dbx tables` / `dbx columns`, `:DbTables` / `:DbColumns`, omnifunc) | P1 | M | — | DONE |
 | [008](008-export-snapshots-csv-jsonl.md) | Snapshot CSV / JSONL export with `--json` sidecar (`dbx export`, `:DbExport`) | P2 | M | 001 | DONE |
 | [009](009-explain-pretty-printer.md) | Pretty-print `EXPLAIN` output (`dbx explain`, `:DbExplain`) | P2 | M | 001 | DONE |
+| [012](012-schema-inspection-siblings.md) | Schema inspection siblings (`dbx indexes` / `dbx fk` / `dbx table-size`, `:DbIndexes` / `:DbFk` / `:DbTableSize`) | P2 | M | 007 | DONE |
 
 ## Dependency notes
 

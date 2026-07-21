@@ -27,6 +27,12 @@ func run(args []string) error {
 		return runTables(args[1:])
 	case "columns":
 		return runColumns(args[1:])
+	case "indexes":
+		return runIndexes(args[1:])
+	case "fk":
+		return runFK(args[1:])
+	case "table-size":
+		return runTableSize(args[1:])
 	case "snapshot":
 		return runSnapshot(args[1:])
 	case "diff":
@@ -60,19 +66,22 @@ Usage:
   dbx <command> [flags]
 
 Commands:
-  query      Execute SQL from stdin, print JSON rows to stdout
-  ddl        Fetch CREATE TABLE DDL for a table
-  tables     List tables (SHOW TABLES) for the connection [optional --schema, --like]
-  columns    List columns (SHOW COLUMNS) for a table [optional --like]
-  snapshot   Save current/last result as a named snapshot
-  diff       Structured JSON diff between two snapshots
-  path       Apply a path/JSONPath over a result or snapshot
-  danger     Analyze SQL for dangerous statements
-  history    List / show / clear recent successful dbx query runs
-  export     Dump a snapshot to CSV or JSONL (with optional JSON sidecar)
-  explain    Pretty-print EXPLAIN <SQL> as a table or JSON plan (with optional sidecar)
-  version    Print version
-  help       Show this help
+  query        Execute SQL from stdin, print JSON rows to stdout
+  ddl          Fetch CREATE TABLE DDL for a table
+  tables       List tables (SHOW TABLES) for the connection [optional --schema, --like]
+  columns      List columns (SHOW COLUMNS) for a table [optional --like]
+  indexes      List indexes (information_schema.STATISTICS) for a table
+  fk           List foreign keys (information_schema.KEY_COLUMN_USAGE) for a table
+  table-size   Size / engine / row-estimate for a table (information_schema.TABLES)
+  snapshot     Save current/last result as a named snapshot
+  diff         Structured JSON diff between two snapshots
+  path         Apply a path/JSONPath over a result or snapshot
+  danger       Analyze SQL for dangerous statements
+  history      List / show / clear recent successful dbx query runs
+  export       Dump a snapshot to CSV or JSONL (with optional JSON sidecar)
+  explain      Pretty-print EXPLAIN <SQL> as a table or JSON plan (with optional sidecar)
+  version      Print version
+  help         Show this help
 
 Examples:
   dbx query --conn local_wms < query.sql
@@ -81,6 +90,9 @@ Examples:
   dbx tables --conn local_wms --schema audit --json
   dbx columns --conn local_wms --table orders
   dbx columns --conn local_wms --table orders --json
+  dbx indexes --conn local_wms --table orders
+  dbx fk --conn local_wms --table order_items
+  dbx table-size --conn local_wms --table orders
   dbx snapshot --name before_split_order
   dbx snapshot list
   dbx snapshot show before_split_order
