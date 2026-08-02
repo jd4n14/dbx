@@ -8,7 +8,7 @@ local function assert_equal(expected, actual, message)
   end
 end
 
-local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn", "DbExport", "DbExplain", "DbExplainJson" }
+local commands = { "DbRun", "DbDDL", "DbTables", "DbColumns", "DbSnapshot", "DbDiff", "DbPath", "DbDanger", "DbConn", "DbExport", "DbExplain", "DbExplainJson", "DbHistoryRun", "DbHistoryPick" }
 for _, name in ipairs(commands) do
   assert(vim.fn.exists(":" .. name) == 2, name .. " is not registered")
 end
@@ -888,6 +888,130 @@ assert(vim.wait(1000, function() return #notifications > before_notifications en
 assert(
   notifications[#notifications].message:find("No hay historial", 1, true),
   "empty history should notify friendly, got " .. notifications[#notifications].message
+)
+
+-- Plan 013: :DbHistoryRun <idx> re-runs the history entry at the given
+-- 1-based index. Validation must reject non-integer / non-positive
+-- arguments with a friendly WARN notify (no CLI invocation, no throw).
+require("dbx").setup({ executable = hist, connection = "local_wms", root = history_project })
+
+-- bad: non-integer arg
+clear_log()
+before_notifications = #notifications
+vim.cmd("DbHistoryRun foo")
+assert(not log_text():find("query --conn", 1, true), "DbHistoryRun foo must not run query")
+assert(
+  notifications[#notifications].message:find("entero positivo", 1, true),
+  "DbHistoryRun foo must notify WARN: " .. notifications[#notifications].message
+)
+assert(
+  notifications[#notifications].level == vim.log.levels.WARN,
+  "DbHistoryRun foo must use WARN level"
+)
+
+-- bad: zero
+clear_log()
+vim.cmd("DbHistoryRun 0")
+assert(not log_text():find("query --conn", 1, true), "DbHistoryRun 0 must not run query")
+
+-- bad: negative
+clear_log()
+vim.cmd("DbHistoryRun -3")
+assert(not log_text():find("query --conn", 1, true), "DbHistoryRun -3 must not run query")
+
+-- bad: out-of-range
+clear_log()
+vim.cmd("DbHistoryRun 99")
+assert(not log_text():find("query --conn", 1, true), "DbHistoryRun 99 must not run query (have 2 entries)")
+assert(
+  notifications[#notifications].message:find("fuera de rango", 1, true),
+  "DbHistoryRun out-of-range must notify: " .. notifications[#notifications].message
+)
+
+-- happy path: :DbHistoryRun 2 re-runs the second-newest entry.
+close_all_windows()
+clear_log()
+vim.cmd("DbHistoryRun 2")
+wait_for("query --conn local_wms")
+assert_log_contains("stdin=select 42;", "DbHistoryRun 2 must pipe the second entry's SQL on stdin")
+close_all_windows()
+
+-- :DbHistoryRun with the same default as :DbHistoryLast keeps behavior
+-- byte-for-byte identical (both invoke the shared helper at index 1).
+clear_log()
+vim.cmd("DbHistoryRun 1")
+wait_for("stdin=select 1;")
+assert_log_contains("query --conn local_wms", "DbHistoryRun 1 must use the entry's connection")
+assert_log_contains("stdin=select 1;", "DbHistoryRun 1 must pipe the newest entry's SQL")
+close_all_windows()
+
+-- Cmdline completion of :DbHistoryRun must enumerate only the known
+-- history indexes and reject non-integer argleads up front.
+require("dbx").setup({ executable = hist, connection = "local_wms", root = history_project })
+local idx_completion_all = vim.fn.getcompletion("DbHistoryRun ", "cmdline")
+assert_equal({ "1", "2" }, idx_completion_all, ":DbHistoryRun completion should list integer indexes")
+local idx_completion_prefix = vim.fn.getcompletion("DbHistoryRun 1", "cmdline")
+assert_equal({ "1" }, idx_completion_prefix, ":DbHistoryRun prefix completion should filter")
+local idx_completion_bad = vim.fn.getcompletion("DbHistoryRun foo", "cmdline")
+assert_equal({}, idx_completion_bad, ":DbHistoryRun completion must reject non-integer argleads")
+
+-- Plan 013: pure completion helper.
+assert_equal({ "1", "2" }, complete.parse_history_index_arglead({ "1", "2" }, ""), "parse_history_index_arglead empty arglead returns all")
+assert_equal({ "1" }, complete.parse_history_index_arglead({ "1", "2" }, "1"), "parse_history_index_arglead prefix filter")
+assert_equal({}, complete.parse_history_index_arglead({ "1", "2" }, "foo"), "parse_history_index_arglead rejects non-integer arglead")
+
+-- Plan 013: history_picker opt-in flag (default OFF; ON after setup).
+require("dbx").setup({ executable = hist, connection = "local_wms", root = history_project })
+assert_equal(false, require("dbx").history_picker_active(), "history_picker defaults to false")
+require("dbx").setup({ executable = hist, connection = "local_wms", root = history_project, history_picker = true })
+assert_equal(true, require("dbx").history_picker_active(), "history_picker=true after setup must report true")
+
+-- :DbHistory with history_picker=true must install the <CR> mapping on the
+-- `dbx://history` buffer.
+require("dbx").setup({ executable = hist, connection = "local_wms", root = history_project, history_picker = true })
+vim.cmd("DbHistory")
+wait_for("history list --json")
+local hist_buf = result_bufnr("history")
+assert(vim.api.nvim_buf_is_valid(hist_buf), ":DbHistory must populate a valid history buffer when picker is on")
+local hist_maps = vim.api.nvim_buf_get_keymap(hist_buf, "n")
+local cr_map = nil
+for _, m in ipairs(hist_maps) do
+  if m.desc == "dbx: re-run history entry" then
+    cr_map = m
+    break
+  end
+end
+assert(cr_map ~= nil, "<CR> mapping on dbx://history must be installed when history_picker=true")
+
+-- :DbHistory with history_picker=false must NOT install the <CR> mapping.
+require("dbx").setup({ executable = hist, connection = "local_wms", root = history_project, history_picker = false })
+vim.cmd("DbHistory")
+wait_for("history list --json")
+local hist_buf2 = result_bufnr("history")
+local hist_maps2 = vim.api.nvim_buf_get_keymap(hist_buf2, "n")
+local cr_map2 = nil
+for _, m in ipairs(hist_maps2) do
+  if m.desc == "dbx: re-run history entry" then
+    cr_map2 = m
+    break
+  end
+end
+assert(cr_map2 == nil, "<CR> mapping must NOT be installed when history_picker=false")
+close_all_windows()
+
+-- Plan 013: :DbHistoryPick with empty history must notify INFO (no crash).
+local empty_pick = tmp .. "/empty-pick-hist-dbx"
+vim.fn.writefile({ "#!/bin/sh", "exit 0" }, empty_pick)
+vim.fn.setfperm(empty_pick, "rwx------")
+local empty_pick_proj = tmp .. "/empty-pick-project"
+vim.fn.mkdir(empty_pick_proj, "p")
+require("dbx").setup({ executable = empty_pick, connection = "local_wms", root = empty_pick_proj })
+before_notifications = #notifications
+vim.cmd("DbHistoryPick")
+assert(vim.wait(1000, function() return #notifications > before_notifications end, 10), ":DbHistoryPick on empty history should notify")
+assert(
+  notifications[#notifications].message:find("No hay historial", 1, true),
+  ":DbHistoryPick on empty history must notify friendly: " .. notifications[#notifications].message
 )
 
 -- Restore default setup so the file is left in a clean state for the final
