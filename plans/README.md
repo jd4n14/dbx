@@ -34,6 +34,7 @@ the status after completion.
 | [007](007-schema-browser-with-sql-completion.md) | Schema browser + SQL completion (`dbx tables` / `dbx columns`, `:DbTables` / `:DbColumns`, omnifunc) | P1 | M | — | DONE |
 | [008](008-export-snapshots-csv-jsonl.md) | Snapshot CSV / JSONL export with `--json` sidecar (`dbx export`, `:DbExport`) | P2 | M | 001 | DONE |
 | [009](009-explain-pretty-printer.md) | Pretty-print `EXPLAIN` output (`dbx explain`, `:DbExplain`) | P2 | M | 001 | DONE |
+| [013](013-history-rerun-and-picker-ux.md) | `:DbHistoryRun <idx>` and opt-in history picker (`vim.ui.select`, `<CR>` mapping on `dbx://history`) | P2 | M | — | DONE |
 
 ## Dependency notes
 
