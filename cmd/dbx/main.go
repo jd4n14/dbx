@@ -41,6 +41,10 @@ func run(args []string) error {
 		return runExport(args[1:])
 	case "explain":
 		return runExplain(args[1:])
+	case "ping":
+		return runPing(args[1:])
+	case "status":
+		return runStatus(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println(Version)
 		return nil
@@ -71,6 +75,8 @@ Commands:
   history    List / show / clear recent successful dbx query runs
   export     Dump a snapshot to CSV or JSONL (with optional JSON sidecar)
   explain    Pretty-print EXPLAIN <SQL> as a table or JSON plan (with optional sidecar)
+  ping       Verify a connection is reachable (no SQL)
+  status     Print connection metadata (text or JSON)
   version    Print version
   help       Show this help
 
@@ -94,5 +100,8 @@ Examples:
   dbx export --format jsonl --no-json after_split_order
   dbx explain --conn local_wms "SELECT * FROM orders WHERE status = 'pending'"
   dbx explain --json --conn local_wms -o /tmp/plan.json "SELECT 1"
+  dbx ping --conn local_wms
+  dbx status --conn local_wms
+  dbx status --conn local_wms --json
 `)
 }

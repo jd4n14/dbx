@@ -798,3 +798,92 @@ El stdout de `query` **no cambia**: sigue siendo solo el array pretty de filas.
 - Directorio = cwd del proceso (corre desde la raíz del proyecto).
 - SQL y datos en last/snapshot pueden contener información sensible; se guardan solo localmente, gitignored y con permisos privados del propietario por defecto.
 - Flags de `show` van **antes** del nombre: `dbx snapshot show --data before_split_order`.
+
+## CLI: `dbx ping` / `dbx status`
+
+Chequeos de salud y metadata de una conexión. **No ejecutan SQL del usuario**;
+ambos abren el pool MySQL y consultan trivialmente el servidor (`SELECT VERSION()`
+y `SELECT @@SESSION.sql_mode` para `status`). Útiles para validar credenciales y
+configuración antes de lanzar queries pesadas, y para confirmar que una
+conexión sigue viva sin tener que canalizar un `SELECT 1` por `dbx query`.
+
+### Uso
+
+```bash
+dbx ping --conn local_wms
+dbx status --conn local_wms
+dbx status --conn local_wms --json
+dbx status --conn local_wms --config /path/to/config.yaml
+```
+
+### Flags
+
+| Flag | Requerido | Aplica a | Descripción |
+|------|-----------|----------|-------------|
+| `--conn` | sí | ambos | Conexión nombrada en el YAML |
+| `--config` | no | ambos | Ruta al config (mismo discovery que `query`) |
+| `--json` | no | `status` | Envelope JSON en lugar del resumen de una línea |
+
+### Salida
+
+**`dbx ping`**
+
+- Éxito: `ok\n` en stdout, exit 0.
+- Fallo: exit ≠ 0, `error: ping <conn>: <razón>` en stderr, stdout vacío.
+- Sin SQL del usuario: reusa el `PingContext` que `mysql.Open` ya hace al abrir
+  el pool, así que ambos comparten el mismo presupuesto de timeout
+  (`query.DefaultQueryTimeout + connectBudget`).
+
+**`dbx status`** (texto, default)
+
+```
+local_wms dev mysql 8.0.36 sql_mode=ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES
+```
+
+- Una sola línea: `<conn> <env> <driver> <server_version>` con
+  ` sql_mode=<valor>` añadido solo si el servidor devuelve un `sql_mode` no
+  vacío.
+- `env` refleja el campo `env` del YAML (`dev` / `staging` / `prod` /
+  `readonly`); queda vacío si no se configuró.
+- `driver` viene del YAML (`mysql` por default); nunca se infiere de la
+  respuesta del servidor.
+
+**`dbx status --json`**
+
+```json
+{
+  "type": "status",
+  "connection": "local_wms",
+  "driver": "mysql",
+  "env": "dev",
+  "server_version": "8.0.36",
+  "sql_mode": "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES",
+  "dbx_version": "dbx 0.0.1"
+}
+```
+
+Pretty-printed (indent 2 + newline final). `sql_mode` es `""` cuando el
+servidor lo devuelve vacío; nunca se omite del envelope para que el contrato
+sea estable.
+
+### Comportamiento común
+
+- Cualquier fallo de conexión, autenticación o query sale por stderr con
+  `error: …` y deja stdout vacío (mismo contrato que el resto del CLI).
+- Reusan la policy de `internal/query.ValidateQuery` para los dos `SELECT`
+  triviales que ejecuta `status`, de modo que ningún cambio futuro puede
+  ampliar la superficie SQL sin pasar por la write barrier.
+- Heredan la política force-safe DSN y la higiene de pool de `mysql.Open`
+  (`SetMaxOpenConns(1)`).
+
+### Limitaciones (MVP)
+
+- Solo MySQL. El driver `sqlite` es de tests (Plan 006) y se rechaza con un
+  mensaje claro en lugar de abrir un archivo local.
+- Sin integración Neovim propia. Para invocarlos desde el editor:
+  `:!dbx ping --conn local_wms` o `:!dbx status --conn local_wms --json`.
+- `status` requiere red (los dos `SELECT` son contra el servidor). Si en el
+  futuro se agrega un modo offline, `status` tendrá que saltearlos y devolver
+  solo metadata local.
+- Si se agrega Postgres u otro driver soportado por `mysql.Open`/herederos,
+  no hace falta cambiar estos comandos; solo actualizar el help y el README.
