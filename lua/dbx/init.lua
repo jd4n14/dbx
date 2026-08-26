@@ -13,6 +13,11 @@ local config = {
   -- Install the SQL omnifunc (`v:lua.require'dbx'.omnifunc`) on SQL buffers
   -- via a FileType autocmd. Default ON; opt out with `setup({ sql_omnifunc = false })`.
   sql_omnifunc = true,
+  -- Install a `<CR>` mapping on the `dbx://history` result buffer that
+  -- re-runs the history entry under the cursor. Default OFF to preserve the
+  -- existing zero-keypress `:DbHistoryLast` muscle memory; opt in with
+  -- `setup({ history_picker = true })`.
+  history_picker = false,
   ---@type boolean|table
   -- false/nil: no keymaps; true: default leader maps; table: explicit lhs overrides.
   mappings = false,
@@ -729,6 +734,13 @@ local function complete_history_indexes(arglead, _cmdline, _cursorpos)
   return complete.filter_prefix(items, arglead)
 end
 
+--- Module-local bufnr of the most recently rendered history buffer. Populated
+--- inside `render_history` so the opt-in `<CR>` picker mapping can be
+--- attached to the correct buffer even after `:DbHistory` re-renders into the
+--- same scratch.
+---@type integer|nil
+local history_bufnr = nil
+
 --- Render JSONL history into a tabular buffer (one line per entry) using the
 --- shared result_buffer scratch buffer with filetype=tsv.
 ---@param stdout string
@@ -745,7 +757,44 @@ local function render_history(stdout)
     local sql = (e.sql or ""):gsub("\r?\n", " "):gsub("\t", " ")
     table.insert(lines, string.format("%d\t%s\t%s\t%s", e.index or 0, ts, conn_name, sql))
   end
+  -- Capture the bufnr before the shared helper so we can layer the
+  -- opt-in picker mapping on top without a second round-trip through
+  -- `result_buffer`'s internals.
+  local bufnr = vim.fn.bufnr("dbx://history")
   result_buffer("history", "tsv", table.concat(lines, "\n"))
+  if bufnr < 0 then
+    bufnr = vim.fn.bufnr("dbx://history")
+  end
+  history_bufnr = bufnr
+  if bufnr > 0 and vim.api.nvim_buf_is_valid(bufnr) then
+    -- Always clear a previously installed picker mapping so toggling the
+    -- flag via `setup` is honored on the next `:DbHistory` re-render.
+    pcall(vim.keymap.del, "n", "<CR>", { buffer = bufnr })
+    if config.history_picker then
+      vim.keymap.set("n", "<CR>", function()
+        local row = vim.api.nvim_win_get_cursor(0)[1]
+        -- Row 1 is the header row; subtract 1 to get a 1-based entry index.
+        M.run_history_by_index(row - 1)
+      end, { buffer = bufnr, desc = "dbx: re-run history entry" })
+    end
+  end
+end
+
+--- Re-run a single history entry through the standard `:DbRun` rendering path.
+--- Extracted from `:DbHistoryLast` so `:DbHistoryRun <idx>` and the
+--- opt-in picker share identical behavior.
+---@param entry table Parsed history record with `connection` + `sql` fields.
+local function rerun_history_entry(entry)
+  local conn = entry.connection or ""
+  if conn == "" then
+    notify("La entrada de historial no tiene conexión; no se puede re-ejecutar")
+    return
+  end
+  run({ "query", "--conn", conn }, {
+    stdin = entry.sql or "",
+    kind = "query",
+    filetype = "json",
+  })
 end
 
 local function buffer_text(bufnr)
@@ -1074,24 +1123,33 @@ local function register_commands()
   end, { nargs = 0, desc = "Muestra el historial reciente de queries ejecutados" })
 
   vim.api.nvim_create_user_command("DbHistoryLast", function(opts)
-    -- Re-run the most recent successful query: re-uses :DbRun's connection
-    -- resolution + rendering so behavior stays consistent with a fresh run.
-    local entry = newest_history_entry()
-    if entry == nil then
-      notify("No hay historial todavía", vim.log.levels.INFO)
-      return
-    end
-    local conn = entry.connection or ""
-    if conn == "" then
-      notify("La entrada de historial no tiene conexión; no se puede re-ejecutar")
-      return
-    end
-    run({ "query", "--conn", conn }, {
-      stdin = entry.sql or "",
-      kind = "query",
-      filetype = "json",
-    })
+    -- Re-run the most recent successful query: delegates to the shared
+    -- run_history_by_index helper so :DbHistoryLast and :DbHistoryRun share
+    -- identical behavior (modulo the validation step, which always passes
+    -- for the literal index 1).
+    M.run_history_by_index(1)
   end, { nargs = 0, desc = "Re-ejecuta el último query exitoso del historial" })
+
+  vim.api.nvim_create_user_command("DbHistoryRun", function(opts)
+    local arg = vim.trim(opts.args or "")
+    local idx = tonumber(arg)
+    if not idx or idx < 1 or math.floor(idx) ~= idx then
+      notify("DbHistoryRun requiere un índice entero positivo (recibido: " .. tostring(arg) .. ")", vim.log.levels.WARN)
+      return
+    end
+    M.run_history_by_index(idx)
+  end, {
+    nargs = 1,
+    complete = complete_history_indexes,
+    desc = "Re-ejecuta la entrada de historial en el índice (1-based)",
+  })
+
+  vim.api.nvim_create_user_command("DbHistoryPick", function(opts)
+    -- One-shot picker over the most recent history entries; independent of
+    -- the `history_picker` setup flag (which only controls the per-buffer
+    -- `<CR>` mapping in the `dbx://history` scratch buffer).
+    M.pick_history_entry()
+  end, { nargs = 0, desc = "Picker (vim.ui.select) sobre entradas recientes de historial" })
 end
 
 local function clear_dbx_keymaps()
@@ -1251,6 +1309,9 @@ function M.setup(opts)
   if opts.sql_omnifunc ~= nil then
     config.sql_omnifunc = opts.sql_omnifunc and true or false
   end
+  if opts.history_picker ~= nil then
+    config.history_picker = opts.history_picker and true or false
+  end
 
   -- Reset cached table lists on every setup call so configuration changes
   -- (new connection, root, executable) take effect immediately.
@@ -1278,6 +1339,78 @@ function M.sql_omnifunc_active()
     event = "FileType",
   })
   return autocmds and #autocmds > 0
+end
+
+--- Look up a history entry by its 1-based index (1 = newest, matching the
+--- CLI's `dbx history list` ordering) and re-run its SQL through the
+--- standard `:DbRun` rendering path. Shared by `:DbHistoryLast` (which
+--- always calls it with `1`) and `:DbHistoryRun <idx>`, plus the opt-in
+--- `<CR>` mapping on the `dbx://history` result buffer.
+---@param idx integer 1-based history index (must be a positive integer)
+function M.run_history_by_index(idx)
+  if type(idx) ~= "number" or idx < 1 or math.floor(idx) ~= idx then
+    notify("DbHistoryRun requiere un índice entero positivo (recibido: " .. tostring(idx) .. ")", vim.log.levels.WARN)
+    return
+  end
+  local entries = history_entries()
+  if #entries == 0 then
+    notify("No hay historial todavía", vim.log.levels.INFO)
+    return
+  end
+  if idx > #entries then
+    notify("Índice fuera de rango: " .. idx .. " (hay " .. #entries .. " entradas)", vim.log.levels.WARN)
+    return
+  end
+  local entry = entries[idx]
+  if entry == nil then
+    notify("No se encontró la entrada " .. idx .. " en el historial", vim.log.levels.WARN)
+    return
+  end
+  rerun_history_entry(entry)
+end
+
+--- Open a `vim.ui.select` picker over the most recent history entries. The
+--- picker is one-shot: it does not install any persistent mapping or
+--- autocmd. Available regardless of the `history_picker` setup flag, which
+--- only governs the per-buffer `<CR>` mapping on `dbx://history`.
+function M.pick_history_entry()
+  local entries = history_entries()
+  if #entries == 0 then
+    notify("No hay historial todavía", vim.log.levels.INFO)
+    return
+  end
+  local format_item = function(entry)
+    local idx = entry.index or "?"
+    local ts = entry.ts or ""
+    local conn = entry.connection or ""
+    local sql = (entry.sql or ""):gsub("\r?\n", " ")
+    if #sql > 80 then
+      sql = sql:sub(1, 77) .. "..."
+    end
+    return string.format("#%s  %s  %s  %s", idx, ts, conn, sql)
+  end
+  local on_choice = function(entry)
+    if entry == nil then
+      return
+    end
+    local idx = entry.index
+    if type(idx) ~= "number" then
+      notify("Entrada de historial inválida", vim.log.levels.WARN)
+      return
+    end
+    M.run_history_by_index(idx)
+  end
+  vim.ui.select(entries, {
+    prompt = "dbx: re-run history entry",
+    format_item = format_item,
+  }, on_choice)
+end
+
+--- True while the opt-in `history_picker` setup flag is on. Exposed for
+--- tests + `:checkhealth`-style inspection.
+---@return boolean
+function M.history_picker_active()
+  return config.history_picker and true or false
 end
 
 return M

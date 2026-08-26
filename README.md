@@ -229,6 +229,27 @@ ni las conserva en Lua. Los comandos disponibles son:
 - `:DbHistoryLast`: re-ejecuta el query más reciente del historial usando la
   conexión con la que se ejecutó originalmente. Útil después de editar el
   código que arma el SQL y querer re-correrlo sin re-armar la query.
+- `:DbHistoryRun <idx>`: re-ejecuta la entrada de historial en el índice
+  1-based dado (1 = más reciente, igual que `dbx history show <idx>`). Acepta
+  `:DbHistoryRun <Tab>` con completion contra los índices reales del
+  historial; índices fuera de rango o no enteros notifican WARN sin
+  ejecutar nada.
+- `:DbHistoryPick`: picker one-shot (`vim.ui.select`) sobre las entradas
+  recientes del historial. Independiente de `history_picker` (ver abajo) y
+  siempre disponible.
+
+Opt-in picker en el buffer de historial (Plan 013):
+
+```lua
+require("dbx").setup({ history_picker = true })
+```
+
+Activa una mapping `<CR>` por buffer en `dbx://history` que re-ejecuta la
+entrada bajo el cursor usando el mismo helper que `:DbHistoryRun <idx>` y
+`:DbHistoryLast`. Default OFF para preservar el flujo zero-keypress de
+`:DbHistoryLast`. Apagar la flag (`setup({ history_picker = false })`)
+deja la mapping en el estado anterior; el buffer se re-renderiza en cada
+`:DbHistory` así que el cambio toma efecto en la siguiente apertura.
 
 Keymaps son **opt-in** (no se imponen defaults agresivos):
 

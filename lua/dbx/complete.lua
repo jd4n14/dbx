@@ -185,4 +185,35 @@ function M.parse_connection_names(text)
   return names
 end
 
+--- Filter candidate history-index strings by the current command-line
+--- argument lead. Pure helper used by the `vim.ui.select` and cmdline
+--- completion paths so both reject non-integer argleads before any CLI
+--- round-trip.
+---@param items string[] Candidate index strings (typically `tostring(idx)`).
+---@param arglead string|nil Current cmdline argument lead.
+---@return string[]
+function M.parse_history_index_arglead(items, arglead)
+  items = items or {}
+  arglead = arglead or ""
+  if arglead == "" then
+    local copy = {}
+    for i, item in ipairs(items) do
+      copy[i] = item
+    end
+    return copy
+  end
+  -- Reject anything that is not a positive-integer prefix; cmdline
+  -- completion must not suggest a non-integer arglead.
+  if not arglead:match("^%d+$") then
+    return {}
+  end
+  local out = {}
+  for _, item in ipairs(items) do
+    if type(item) == "string" and item:sub(1, #arglead) == arglead then
+      out[#out + 1] = item
+    end
+  end
+  return out
+end
+
 return M
