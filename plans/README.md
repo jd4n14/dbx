@@ -16,8 +16,10 @@ after completion.
   test connector (Plan 006, offline-only), the schema browser (`dbx tables` /
   `dbx columns`, Plan 007), the Neovim omnifunc SQL completion, snapshot
   export to CSV / JSON Lines with `--json` sidecar default ON (Plan 008),
-  the `EXPLAIN` pretty-printer (`dbx explain`, `:DbExplain`, Plan 009), and
-  the minimal Neovim client.
+  the `EXPLAIN` pretty-printer (`dbx explain`, `:DbExplain`, Plan 009), the
+  schema inspection siblings (`dbx indexes` / `dbx fk` / `dbx table-size`,
+  `:DbIndexes` / `:DbFk` / `:DbTableSize`, Plan 012), and the minimal Neovim
+  client.
 - **Verification baseline:** `go test ./...`, `go vet ./...`, and
   `go build -o /tmp/dbx ./cmd/dbx` pass on the reviewed workspace. There is no
   repository CI configuration yet; it is deferred until the MVP commands land.
@@ -37,7 +39,7 @@ after completion.
 | [009](009-explain-pretty-printer.md) | Pretty-print `EXPLAIN` output (`dbx explain`, `:DbExplain`) | P2 | M | 001 | DONE |
 | [010](010-ping-and-status-commands.md) | `dbx ping` / `dbx status` — connection health and metadata | P1 | S | — | DONE ([PR #13](https://github.com/jd4n14/dbx/pull/13)) |
 | [011](011-query-row-limit-with-truncation-metadata.md) | `--max-rows N` for `dbx query` with truncation envelope | P1 | M | 005 | DONE ([PR #14](https://github.com/jd4n14/dbx/pull/14)) |
-| [012](012-schema-inspection-siblings.md) | `dbx indexes` / `dbx fk` / `dbx table-size` + `:Db*` mirrors | P2 | M | 007 | TODO |
+| [012](012-schema-inspection-siblings.md) | `dbx indexes` / `dbx fk` / `dbx table-size` + `:Db*` mirrors | P2 | M | 007 | DONE |
 | [013](013-history-rerun-and-picker-ux.md) | `:DbHistoryRun <idx>` + opt-in `history_picker` UX | P2 | M | — | TODO |
 | [014](014-floating-danger-window-and-conn-env-ux.md) | Floating danger window + conn@env statusline UX | P2 | M | 005 | TODO |
 
