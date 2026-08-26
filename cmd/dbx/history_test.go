@@ -14,6 +14,7 @@ import (
 
 	"github.com/jd4n14/dbx/internal/config"
 	"github.com/jd4n14/dbx/internal/history"
+	"github.com/jd4n14/dbx/internal/query"
 )
 
 func TestRunHistory_MissingSubcommand(t *testing.T) {
@@ -230,8 +231,8 @@ func TestRunQuery_AppendsHistoryOnSuccess(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("select 1 as n, 2 as n"),
 		&stdout, &stderr,
-		func(context.Context, config.Connection, string) ([]byte, error) {
-			return []byte(`[{"n":1},{"n":2}]`), nil
+		func(context.Context, config.Connection, string, int) (query.RunResult, error) {
+			return query.RunResult{Data: []byte(`[{"n":1},{"n":2}]`)}, nil
 		},
 		cwd,
 	); err != nil {
@@ -267,8 +268,8 @@ func TestRunQuery_AppendsHistorySingleObjectRow(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("select 1 as n"),
 		&stdout, &stderr,
-		func(context.Context, config.Connection, string) ([]byte, error) {
-			return []byte(`{"n":1}`), nil
+		func(context.Context, config.Connection, string, int) (query.RunResult, error) {
+			return query.RunResult{Data: []byte(`{"n":1}`)}, nil
 		},
 		cwd,
 	); err != nil {
@@ -288,8 +289,8 @@ func TestRunQuery_NoHistoryOnFailure(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("select 1"),
 		&stdout, &stderr,
-		func(context.Context, config.Connection, string) ([]byte, error) {
-			return nil, errors.New("boom")
+		func(context.Context, config.Connection, string, int) (query.RunResult, error) {
+			return query.RunResult{}, errors.New("boom")
 		},
 		cwd,
 	)
@@ -324,8 +325,8 @@ func TestRunQuery_HistoryAppendFailureWarnsButDoesNotFail(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("select 1"),
 		&stdout, &stderr,
-		func(context.Context, config.Connection, string) ([]byte, error) {
-			return []byte(`[{"n":1}]`), nil
+		func(context.Context, config.Connection, string, int) (query.RunResult, error) {
+			return query.RunResult{Data: []byte(`[{"n":1}]`)}, nil
 		},
 		cwd,
 	); err != nil {

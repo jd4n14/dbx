@@ -3,14 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jd4n14/dbx/internal/config"
+	"github.com/jd4n14/dbx/internal/history"
 	"github.com/jd4n14/dbx/internal/query"
+	"github.com/jd4n14/dbx/internal/snapshot"
 )
 
 const testConnYAML = `
@@ -71,7 +75,7 @@ func TestRunQuery_EmptyStdin(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader(""),
 		&stdout, &stderr,
-		query.RunConnection,
+		query.RunConnectionWithLimit,
 		t.TempDir(),
 	)
 	if err == nil {
@@ -90,7 +94,7 @@ func TestRunQuery_WhitespaceOnlyStdin(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("   \n\t  "),
 		&stdout, &stderr,
-		query.RunConnection,
+		query.RunConnectionWithLimit,
 		t.TempDir(),
 	)
 	if err == nil {
@@ -127,14 +131,14 @@ func TestRunQuery_PolicyDenyOffline(t *testing.T) {
 				[]string{"--conn", "local", "--config", cfgPath},
 				strings.NewReader(tc.sql),
 				&stdout, &stderr,
-				func(ctx context.Context, conn config.Connection, sqlText string) ([]byte, error) {
+				func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
 					// Wrap to detect accidental Open attempts via RunConnection path.
 					// Real RunConnection is the production runner under test.
-					out, e := query.RunConnection(ctx, conn, sqlText)
+					res, e := query.RunConnectionWithLimit(ctx, conn, sqlText, 0)
 					if e != nil && strings.Contains(e.Error(), "connect:") {
 						opened = true
 					}
-					return out, e
+					return res, e
 				},
 				t.TempDir(),
 			)
@@ -218,13 +222,13 @@ func TestRunQuery_StdoutPurityOnSuccess(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("SELECT 1 AS n"),
 		&stdout, &stderr,
-		func(ctx context.Context, conn config.Connection, sqlText string) ([]byte, error) {
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
 			gotSQL = sqlText
 			gotConnName = conn.Name
 			if conn.Host != "127.0.0.1" || conn.Database != "testdb" {
-				return nil, errors.New("unexpected connection fields")
+				return query.RunResult{}, errors.New("unexpected connection fields")
 			}
-			return wantJSON, nil
+			return query.RunResult{Data: wantJSON}, nil
 		},
 		cwd,
 	)
@@ -270,7 +274,7 @@ func TestRunQuery_CachePreservesLargeInteger(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("SELECT id FROM orders"),
 		&stdout, &stderr,
-		func(context.Context, config.Connection, string) ([]byte, error) { return result, nil },
+		func(context.Context, config.Connection, string, int) (query.RunResult, error) { return query.RunResult{Data: result}, nil },
 		cwd,
 	)
 	if err != nil {
@@ -293,8 +297,8 @@ func TestRunQuery_RunnerErrorNoStdout(t *testing.T) {
 		[]string{"--conn", "local", "--config", cfgPath},
 		strings.NewReader("SELECT 1"),
 		&stdout, &stderr,
-		func(ctx context.Context, conn config.Connection, sqlText string) ([]byte, error) {
-			return []byte("partial"), errors.New("boom")
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
+			return query.RunResult{}, errors.New("boom")
 		},
 		t.TempDir(),
 	)
@@ -363,5 +367,256 @@ func TestRunQuery_InvalidFlag(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout must be empty on flag error, got %q", stdout.String())
+	}
+}
+
+// TestRunQuery_MaxRowsEnvelopeOnSuccess asserts that --max-rows > 0 produces
+// the query envelope shape on stdout AND mirrors it into .dbx/last.json,
+// while the no-flag regression path stays a bare pretty array.
+func TestRunQuery_MaxRowsEnvelopeOnSuccess(t *testing.T) {
+	cfgPath := writeTempConfig(t, testConnYAML)
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	var gotMaxRows int
+	var gotSQL string
+	err := runQueryCmd(
+		[]string{"--conn", "local", "--config", cfgPath, "--max-rows", "5"},
+		strings.NewReader("SELECT id FROM orders"),
+		&stdout, &stderr,
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
+			gotMaxRows = maxRows
+			gotSQL = sqlText
+			return query.RunResult{
+				Data: []byte("{\n  \"type\": \"query\",\n  \"truncated\": false,\n  \"row_count\": 5,\n  \"max_rows\": 5,\n  \"data\": []\n}\n"),
+				Truncated: false,
+				RowCount:  5,
+				MaxRows:   5,
+			}, nil
+		},
+		cwd,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotMaxRows != 5 {
+		t.Fatalf("fake runner received maxRows=%d, want 5", gotMaxRows)
+	}
+	if gotSQL != "SELECT id FROM orders" {
+		t.Fatalf("fake runner received sql=%q", gotSQL)
+	}
+
+	// Stdout must be the envelope verbatim.
+	want := "{\n  \"type\": \"query\",\n  \"truncated\": false,\n  \"row_count\": 5,\n  \"max_rows\": 5,\n  \"data\": []\n}\n"
+	if stdout.String() != want {
+		t.Fatalf("stdout mismatch:\ngot:  %q\nwant: %q", stdout.String(), want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr must be empty on success, got %q", stderr.String())
+	}
+
+	// .dbx/last.json must mirror the envelope (round-trip via ReadLast).
+	last, err := snapshot.ReadLast(cwd)
+	if err != nil {
+		t.Fatalf("ReadLast: %v", err)
+	}
+	if last.Connection != "local" {
+		t.Fatalf("last connection = %q, want local", last.Connection)
+	}
+	if !bytes.Contains(last.Data, []byte(`"type": "query"`)) ||
+		!bytes.Contains(last.Data, []byte(`"truncated": false`)) ||
+		!bytes.Contains(last.Data, []byte(`"row_count": 5`)) ||
+		!bytes.Contains(last.Data, []byte(`"max_rows": 5`)) {
+		t.Fatalf("last.json data does not carry envelope fields:\n%s", last.Data)
+	}
+}
+
+// TestRunQuery_NoMaxRowsRegressionGuard ensures that omitting --max-rows
+// keeps the legacy bare-array stdout contract byte-for-byte. This is the
+// one-way compatibility guard for every existing consumer.
+func TestRunQuery_NoMaxRowsRegressionGuard(t *testing.T) {
+	cfgPath := writeTempConfig(t, testConnYAML)
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	want := []byte("[\n  {\n    \"n\": 1\n  }\n]\n")
+	err := runQueryCmd(
+		[]string{"--conn", "local", "--config", cfgPath},
+		strings.NewReader("SELECT 1"),
+		&stdout, &stderr,
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
+			if maxRows != 0 {
+				t.Fatalf("fake runner received maxRows=%d, want 0 (no flag)", maxRows)
+			}
+			return query.RunResult{Data: want}, nil
+		},
+		cwd,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stdout.Bytes(), want) {
+		t.Fatalf("stdout = %q, want exact bare array %q", stdout.String(), want)
+	}
+
+	last, err := snapshot.ReadLast(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// WriteLastFromQueryData normalizes data via json.Compact, so last.json
+	// carries compact JSON. The contract is "same value as stdout", not
+	// "byte-identical to stdout"; assert via re-marshal round-trip.
+	if !json.Valid(last.Data) {
+		t.Fatalf("last.json data is not valid JSON:\n%s", last.Data)
+	}
+	var lastArr []map[string]any
+	if err := json.Unmarshal(last.Data, &lastArr); err != nil {
+		t.Fatalf("last.json data not a JSON array: %v\n%s", err, last.Data)
+	}
+	if len(lastArr) != 1 || lastArr[0]["n"] != float64(1) {
+		t.Fatalf("last.json payload does not round-trip the bare array, got %v", lastArr)
+	}
+}
+
+// TestRunQuery_MaxRowsNegativeRejected covers the --max-rows -1 path that
+// must fail with a helpful error before any DB call.
+func TestRunQuery_MaxRowsNegativeRejected(t *testing.T) {
+	cfgPath := writeTempConfig(t, testConnYAML)
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	called := false
+	err := runQueryCmd(
+		[]string{"--conn", "local", "--config", cfgPath, "--max-rows", "-1"},
+		strings.NewReader("SELECT 1"),
+		&stdout, &stderr,
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
+			called = true
+			return query.RunResult{}, nil
+		},
+		cwd,
+	)
+	if err == nil {
+		t.Fatal("expected error for --max-rows -1")
+	}
+	if !strings.Contains(err.Error(), "max-rows must be > 0") {
+		t.Fatalf("error should mention max-rows, got: %v", err)
+	}
+	if called {
+		t.Fatal("fake runner must not be called for negative --max-rows")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout must be empty on validation error, got %q", stdout.String())
+	}
+}
+
+// TestRunQuery_MaxRowsNonIntegerRejected exercises the flag parser: a bad
+// value must produce an error and never reach the fake runner.
+func TestRunQuery_MaxRowsNonIntegerRejected(t *testing.T) {
+	cfgPath := writeTempConfig(t, testConnYAML)
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	called := false
+	err := runQueryCmd(
+		[]string{"--conn", "local", "--config", cfgPath, "--max-rows", "abc"},
+		strings.NewReader("SELECT 1"),
+		&stdout, &stderr,
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
+			called = true
+			return query.RunResult{}, nil
+		},
+		cwd,
+	)
+	if err == nil {
+		t.Fatal("expected flag parse error for --max-rows abc")
+	}
+	if called {
+		t.Fatal("fake runner must not be called when flag parse fails")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout must be empty on flag error, got %q", stdout.String())
+	}
+}
+
+// TestRunQuery_MaxRowsZeroDisablesEnvelope covers the explicit `--max-rows 0`
+// contract: same as omitting the flag (bare array, no envelope).
+func TestRunQuery_MaxRowsZeroDisablesEnvelope(t *testing.T) {
+	cfgPath := writeTempConfig(t, testConnYAML)
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	want := []byte("[\n  {\n    \"n\": 1\n  }\n]\n")
+	err := runQueryCmd(
+		[]string{"--conn", "local", "--config", cfgPath, "--max-rows", "0"},
+		strings.NewReader("SELECT 1"),
+		&stdout, &stderr,
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
+			if maxRows != 0 {
+				t.Fatalf("fake runner received maxRows=%d, want 0", maxRows)
+			}
+			return query.RunResult{Data: want}, nil
+		},
+		cwd,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stdout.Bytes(), want) {
+		t.Fatalf("explicit --max-rows 0 must keep bare array; got %q", stdout.String())
+	}
+}
+
+// TestRunQuery_MaxRowsHistoryRows asserts that history.Append receives the
+// kept row count from the RunResult when --max-rows > 0, not the raw
+// envelope byte size.
+func TestRunQuery_MaxRowsHistoryRows(t *testing.T) {
+	cfgPath := writeTempConfig(t, testConnYAML)
+	cwd := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	err := runQueryCmd(
+		[]string{"--conn", "local", "--config", cfgPath, "--max-rows", "3"},
+		strings.NewReader("select * from t"),
+		&stdout, &stderr,
+		func(ctx context.Context, conn config.Connection, sqlText string, maxRows int) (query.RunResult, error) {
+			return query.RunResult{
+				Data:      []byte("{\"type\":\"query\",\"truncated\":true,\"row_count\":3,\"max_rows\":3,\"data\":[1,2,3]}"),
+				Truncated: true,
+				RowCount:  3,
+				MaxRows:   3,
+			}, nil
+		},
+		cwd,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ent, err := history.ShowByIndex(cwd, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ent.Rows != 3 {
+		t.Fatalf("history rows = %d, want 3 (from RunResult.RowCount, not envelope byte size)", ent.Rows)
+	}
+	if ent.Bytes <= 0 {
+		t.Fatalf("history bytes = %d, want > 0", ent.Bytes)
+	}
+}
+
+// TestRunQuery_MaxRowsHelpContainsFlag ensures the flag is documented in the
+// flag set's usage string so users discover it via --help.
+func TestRunQuery_MaxRowsHelpContainsFlag(t *testing.T) {
+	fs := flag.NewFlagSet("query", flag.ContinueOnError)
+	fs.Int("max-rows", 0, "cap rows returned (0 = unlimited); when >0, output is a query envelope with truncation metadata")
+	if !strings.Contains(fs.Name(), "query") {
+		t.Fatalf("flagset name = %q, want query", fs.Name())
+	}
+	if fs.Lookup("max-rows") == nil {
+		t.Fatal("--max-rows must be a registered flag")
+	}
+	if fs.Lookup("max-rows").DefValue != "0" {
+		t.Fatalf("--max-rows default = %q, want 0", fs.Lookup("max-rows").DefValue)
 	}
 }
