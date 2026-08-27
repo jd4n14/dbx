@@ -36,14 +36,28 @@ func (f *fakeExplainRunner) runner(ctx context.Context, conn config.Connection, 
 	return f.res, nil
 }
 
-// invokeExplain runs runExplainCmdWithRunner with the fake runner; cwd is
-// isolated per test via t.TempDir().
+// explainTestConfig writes a temp YAML with the local_wms connection the
+// explain tests resolve. CI (and this box) have no HOME/.config/dbx, so
+// tests must pass --config instead of relying on discovery.
+func explainTestConfig(t *testing.T) string {
+	t.Helper()
+	return writeTempConfig(t, pingTestConnYAML)
+}
+
+func withExplainConfig(t *testing.T, args []string) []string {
+	t.Helper()
+	out := make([]string, 0, len(args)+2)
+	out = append(out, "--config", explainTestConfig(t))
+	out = append(out, args...)
+	return out
+}
+
 func invokeExplain(t *testing.T, args []string, stdin string, fake *fakeExplainRunner) (stdout, stderr string, err error) {
 	t.Helper()
 	cwd := t.TempDir()
 	var out, errOut bytes.Buffer
 	in := strings.NewReader(stdin)
-	err = runExplainCmdWithRunner(args, in, &out, &errOut, cwd, fake.runner)
+	err = runExplainCmdWithRunner(withExplainConfig(t, args), in, &out, &errOut, cwd, fake.runner)
 	return out.String(), errOut.String(), err
 }
 
@@ -132,7 +146,7 @@ func TestExplain_JSONToFileWithSidecar(t *testing.T) {
 	var out, errOut bytes.Buffer
 	in := strings.NewReader("")
 	err := runExplainCmdWithRunner(
-		[]string{"--json", "--conn", "local_wms", "-o", target, "SELECT 1"},
+		withExplainConfig(t, []string{"--json", "--conn", "local_wms", "-o", target, "SELECT 1"}),
 		in, &out, &errOut, cwd, runner.runner)
 	if err != nil {
 		t.Fatalf("explain: %v\nstderr: %s", err, errOut.String())
@@ -209,7 +223,7 @@ func TestExplain_NoJSONSidecarFlagWins(t *testing.T) {
 	var out, errOut bytes.Buffer
 	in := strings.NewReader("")
 	err := runExplainCmdWithRunner(
-		[]string{"--json", "--json-sidecar", "--no-json-sidecar", "--conn", "local_wms", "-o", target, "SELECT 1"},
+		withExplainConfig(t, []string{"--json", "--json-sidecar", "--no-json-sidecar", "--conn", "local_wms", "-o", target, "SELECT 1"}),
 		in, &out, &errOut, cwd, runner.runner)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
@@ -235,7 +249,7 @@ func TestExplain_TabularToFileNoSidecar(t *testing.T) {
 	var out, errOut bytes.Buffer
 	in := strings.NewReader("")
 	err := runExplainCmdWithRunner(
-		[]string{"--conn", "local_wms", "-o", target, "SELECT 1"},
+		withExplainConfig(t, []string{"--conn", "local_wms", "-o", target, "SELECT 1"}),
 		in, &out, &errOut, cwd, runner.runner)
 	if err != nil {
 		t.Fatalf("explain: %v\nstderr: %s", err, errOut.String())
@@ -318,7 +332,7 @@ func TestExplain_DataFailureRollsBackSidecar(t *testing.T) {
 	var out, errOut bytes.Buffer
 	in := strings.NewReader("")
 	err := runExplainCmdWithRunner(
-		[]string{"--json", "--conn", "local_wms", "-o", target, "SELECT 1"},
+		withExplainConfig(t, []string{"--json", "--conn", "local_wms", "-o", target, "SELECT 1"}),
 		in, &out, &errOut, cwd, runner.runner)
 	if err == nil {
 		t.Fatalf("expected data-write failure")
@@ -366,7 +380,7 @@ func TestExplain_SidecarTimestampParses(t *testing.T) {
 	var out, errOut bytes.Buffer
 	in := strings.NewReader("")
 	if err := runExplainCmdWithRunner(
-		[]string{"--json", "--conn", "local_wms", "-o", target, "SELECT 1"},
+		withExplainConfig(t, []string{"--json", "--conn", "local_wms", "-o", target, "SELECT 1"}),
 		in, &out, &errOut, cwd, runner.runner); err != nil {
 		t.Fatalf("explain: %v", err)
 	}

@@ -193,6 +193,12 @@ identificarlos desde otros plugins o statuslines.
 Opcionalmente `setup({ danger_preflight = false })` desactiva el análisis
 preventivo de `:DbRun` (ver más abajo). Por defecto está activo.
 
+`:DbRun` honra `setup({ max_rows = N })` (default `0` = ilimitado, compatible
+con el JSON array de hoy). `N > 0` pasa `--max-rows N` al CLI; si el envelope
+trae `truncated: true`, se notifica WARN. El mismo tope aplica a
+`:DbHistoryLast` / `:DbHistoryRun`. No uses el argumento de `:DbRun` para N:
+ese `nargs` sigue siendo el nombre de conexión.
+
 Las credenciales permanecen en la configuración de dbx; el plugin no las copia
 ni las conserva en Lua. Los comandos disponibles son:
 
@@ -250,6 +256,29 @@ entrada bajo el cursor usando el mismo helper que `:DbHistoryRun <idx>` y
 `:DbHistoryLast`. Apagar la flag (`setup({ history_picker = false })`)
 deja la mapping en el estado anterior; el buffer se re-renderiza en cada
 `:DbHistory` así que el cambio toma efecto en la siguiente apertura.
+
+Plan 014 (opt-in, default OFF; no cambia el preflight ni `:DbConn` por defecto):
+
+```lua
+require("dbx").setup({
+  danger_float = true, -- envelope de danger en floating window (`q` cierra)
+  statusline = true,   -- escribe vim.g.dbx_status = "conn@env"
+})
+```
+
+- `danger_float`: `:DbDanger` abre un floating window (`nvim_open_win`
+  relative=editor, scratch, filetype json) en lugar del buffer de resultado.
+  El preflight warning/critical también muestra el float (además del notify).
+  Sin la flag, `:DbDanger` sigue usando el split de resultado y el preflight
+  solo notifica.
+- `statusline`: **no** toca `vim.o.statusline`. Exporta
+  `require("dbx").statusline()` (siempre) y, con la flag ON, escribe
+  `vim.g.dbx_status`. En tu statusline: `%{get(g:,'dbx_status','')}`.
+  El env sale de `dbx status --json` (async, cacheado en `:DbConn` / setup);
+  si el CLI falla se muestra solo el nombre de la conexión.
+
+CI: GitHub Actions (`.github/workflows/ci.yml`) corre `go test ./...`,
+`go vet ./...`, `go build` y el smoke de Neovim en un job aparte.
 
 Keymaps son **opt-in** (no se imponen defaults agresivos):
 

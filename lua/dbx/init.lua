@@ -18,6 +18,17 @@ local config = {
   -- existing zero-keypress `:DbHistoryLast` muscle memory; opt in with
   -- `setup({ history_picker = true })`.
   history_picker = false,
+  -- Cap rows on `:DbRun` / history rerun via `dbx query --max-rows N`.
+  -- 0 = unlimited (default; byte-compatible with the bare JSON array).
+  max_rows = 0,
+  -- Show danger envelopes in a floating window (Plan 014). Default OFF
+  -- so `:DbDanger` keeps the result-buffer path and preflight stays
+  -- notify-only.
+  danger_float = false,
+  -- Opt-in conn@env statusline helper (Plan 014). Default OFF: does not
+  -- clobber `vim.o.statusline`. When ON, writes `vim.g.dbx_status`.
+  -- `M.statusline()` always works.
+  statusline = false,
   ---@type boolean|table
   -- false/nil: no keymaps; true: default leader maps; table: explicit lhs overrides.
   mappings = false,
@@ -33,6 +44,15 @@ local config = {
 
 -- Session connection override set by :DbConn (takes precedence over setup.connection).
 local session_connection = nil
+
+-- Cached env label from `dbx status --json` for the current connection.
+-- status_env_conn is the connection the cache belongs to; a mismatch
+-- means we only know the bare name until the async refresh lands.
+local status_env = nil
+local status_env_conn = nil
+
+-- Last danger floating window so a new open can close the previous one.
+local danger_float_win = nil
 
 -- Tracks the FileType autocmd id installed by setup so re-entrant setup
 -- calls replace it instead of stacking duplicates.
@@ -254,6 +274,7 @@ local config_flag_commands = {
   ddl = true,
   danger = true,
   explain = true,
+  status = true,
 }
 
 --- Insert `--config <path>` after the subcommand when supported, a project
@@ -346,6 +367,168 @@ function M.current_connection()
     return nil
   end
   return value
+end
+
+--- Build `dbx query --conn <conn>` argv, adding `--max-rows N` when
+--- `setup({ max_rows = N })` is N > 0. Shared by `:DbRun` and history rerun.
+---@param conn string
+---@return string[]
+local function query_argv(conn)
+  local argv = { "query", "--conn", conn }
+  local n = tonumber(config.max_rows) or 0
+  if n > 0 then
+    argv[#argv + 1] = "--max-rows"
+    argv[#argv + 1] = tostring(math.floor(n))
+  end
+  return argv
+end
+
+--- WARN when the query envelope reports truncation. Bare JSON arrays
+--- (max_rows = 0) are ignored.
+---@param stdout string
+local function maybe_notify_truncated(stdout)
+  if not stdout or stdout == "" then
+    return
+  end
+  local ok, parsed = pcall(vim.json.decode, stdout)
+  if not ok or type(parsed) ~= "table" then
+    return
+  end
+  if parsed.truncated == true then
+    notify(
+      "Resultado truncado ("
+        .. tostring(parsed.row_count)
+        .. " filas, máximo "
+        .. tostring(parsed.max_rows)
+        .. ")",
+      vim.log.levels.WARN
+    )
+  end
+end
+
+--- Run a query through the shared result-buffer path, honouring max_rows.
+---@param conn string
+---@param sql string
+local function run_query(conn, sql)
+  run(query_argv(conn), {
+    stdin = sql,
+    on_success = function(stdout)
+      maybe_notify_truncated(stdout)
+      result_buffer("query", "json", stdout)
+    end,
+  })
+end
+
+--- Open (or replace) a modest floating window with the danger envelope.
+---@param stdout string
+local function open_danger_float(stdout)
+  local lines = output_lines(stdout)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.bo[bufnr].buftype = "nofile"
+  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].swapfile = false
+  vim.bo[bufnr].filetype = "json"
+  vim.bo[bufnr].modifiable = false
+
+  local cols = vim.o.columns
+  local rows = vim.o.lines
+  if type(cols) ~= "number" or cols < 1 then
+    cols = 80
+  end
+  if type(rows) ~= "number" or rows < 1 then
+    rows = 24
+  end
+  local width = math.max(20, math.min(80, cols - 4))
+  local height = math.max(3, math.min(20, #lines + 1, math.max(3, rows - 4)))
+  local row = math.max(0, math.floor((rows - height) / 2) - 1)
+  local col = math.max(0, math.floor((cols - width) / 2))
+
+  if danger_float_win and vim.api.nvim_win_is_valid(danger_float_win) then
+    pcall(vim.api.nvim_win_close, danger_float_win, true)
+  end
+
+  danger_float_win = vim.api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+  })
+  vim.keymap.set("n", "q", function()
+    if danger_float_win and vim.api.nvim_win_is_valid(danger_float_win) then
+      vim.api.nvim_win_close(danger_float_win, true)
+    end
+  end, { buffer = bufnr, nowait = true, silent = true, desc = "dbx: close danger float" })
+end
+
+--- conn@env (or just conn). Empty when no connection is active.
+--- Always available; the `statusline` setup flag only controls whether
+--- `vim.g.dbx_status` is written.
+---@return string
+function M.statusline()
+  local conn = M.current_connection()
+  if not conn then
+    return ""
+  end
+  if status_env_conn == conn and type(status_env) == "string" and status_env ~= "" then
+    return conn .. "@" .. status_env
+  end
+  return conn
+end
+
+local function sync_status_global()
+  if config.statusline then
+    vim.g.dbx_status = M.statusline()
+  end
+end
+
+--- Async `dbx status --json` to fill the env cache. Never blocks, never
+--- notifies on failure — UI always has at least the connection name.
+local function refresh_status_env()
+  local conn = M.current_connection()
+  if not conn then
+    status_env = nil
+    status_env_conn = nil
+    sync_status_global()
+    return
+  end
+  if status_env_conn ~= conn then
+    status_env = nil
+    status_env_conn = conn
+  end
+  sync_status_global()
+
+  local executable = config.executable
+  if not executable_available(executable) then
+    return
+  end
+  local root = M.resolve_root()
+  local config_path = M.project_config_path(root)
+  local argv = with_config_flag({ "status", "--json", "--conn", conn }, config_path)
+  local command = { executable }
+  vim.list_extend(command, argv)
+  vim.system(command, { cwd = root, text = true, stdin = "" }, function(result)
+    vim.schedule(function()
+      if M.current_connection() ~= conn then
+        return
+      end
+      if not result or result.code ~= 0 then
+        return
+      end
+      local ok, parsed = pcall(vim.json.decode, result.stdout or "")
+      if not ok or type(parsed) ~= "table" then
+        return
+      end
+      if type(parsed.env) == "string" and parsed.env ~= "" then
+        status_env = parsed.env
+        status_env_conn = conn
+        sync_status_global()
+      end
+    end)
+  end)
 end
 
 --- Parse a danger envelope from CLI stdout. Returns nil on bad JSON.
@@ -467,7 +650,14 @@ local function preflight_danger(source, conn, on_decision)
         on_decision({ proceed = true, block = false })
         return
       end
-      on_decision(decide_danger(parsed))
+      local decision = decide_danger(parsed)
+      if config.danger_float then
+        local severity = parsed.severity
+        if severity == "warning" or severity == "critical" then
+          open_danger_float(result.stdout or "")
+        end
+      end
+      on_decision(decision)
     end)
   end)
 end
@@ -790,11 +980,7 @@ local function rerun_history_entry(entry)
     notify("La entrada de historial no tiene conexión; no se puede re-ejecutar")
     return
   end
-  run({ "query", "--conn", conn }, {
-    stdin = entry.sql or "",
-    kind = "query",
-    filetype = "json",
-  })
+  run_query(conn, entry.sql or "")
 end
 
 local function buffer_text(bufnr)
@@ -861,7 +1047,7 @@ local function register_commands()
       if not decision.proceed then
         return
       end
-      run({ "query", "--conn", conn }, { stdin = source, kind = "query", filetype = "json" })
+      run_query(conn, source)
     end)
   end, {
     nargs = "?",
@@ -1086,9 +1272,19 @@ local function register_commands()
 
   vim.api.nvim_create_user_command("DbDanger", function(opts)
     local conn = connection()
-    if conn then
-      run({ "danger", "--conn", conn }, { stdin = sql_source(opts), kind = "danger", filetype = "json" })
+    if not conn then
+      return
     end
+    run({ "danger", "--conn", conn }, {
+      stdin = sql_source(opts),
+      on_success = function(stdout)
+        if config.danger_float then
+          open_danger_float(stdout)
+        else
+          result_buffer("danger", "json", stdout)
+        end
+      end,
+    })
   end, { nargs = 0, range = true, desc = "Analiza SQL peligroso sin ejecutarlo" })
 
   vim.api.nvim_create_user_command("DbConn", function(opts)
@@ -1097,6 +1293,7 @@ local function register_commands()
       local current = M.current_connection()
       if current then
         notify("Conexión activa: " .. current, vim.log.levels.INFO)
+        refresh_status_env()
       else
         notify("No hay conexión activa. Usa :DbConn <nombre>")
       end
@@ -1104,6 +1301,7 @@ local function register_commands()
     end
     session_connection = name
     notify("Conexión activa: " .. name, vim.log.levels.INFO)
+    refresh_status_env()
   end, {
     nargs = "?",
     complete = complete_connections,
@@ -1312,6 +1510,22 @@ function M.setup(opts)
   if opts.history_picker ~= nil then
     config.history_picker = opts.history_picker and true or false
   end
+  if opts.max_rows ~= nil then
+    local n = tonumber(opts.max_rows) or 0
+    if n < 0 then
+      n = 0
+    end
+    config.max_rows = n
+  end
+  if opts.danger_float ~= nil then
+    config.danger_float = opts.danger_float and true or false
+  end
+  if opts.statusline ~= nil then
+    config.statusline = opts.statusline and true or false
+    if not config.statusline then
+      vim.g.dbx_status = nil
+    end
+  end
 
   -- Reset cached table lists on every setup call so configuration changes
   -- (new connection, root, executable) take effect immediately.
@@ -1321,6 +1535,7 @@ function M.setup(opts)
 
   register_commands()
   register_keymaps(config.mappings)
+  refresh_status_env()
 end
 
 --- True while a SQL buffer in the current Neovim session has the dbx

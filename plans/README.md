@@ -18,11 +18,13 @@ after completion.
   export to CSV / JSON Lines with `--json` sidecar default ON (Plan 008),
   the `EXPLAIN` pretty-printer (`dbx explain`, `:DbExplain`, Plan 009), the
   schema inspection siblings (`dbx indexes` / `dbx fk` / `dbx table-size`,
-  `:DbIndexes` / `:DbFk` / `:DbTableSize`, Plan 012), and the minimal Neovim
-  client.
+  `:DbIndexes` / `:DbFk` / `:DbTableSize`, Plan 012), the history rerun
+  picker (Plan 013), the floating danger window + conn@env statusline
+  (Plan 014), `--max-rows` on `:DbRun`, and the minimal Neovim client.
 - **Verification baseline:** `go test ./...`, `go vet ./...`, and
-  `go build -o /tmp/dbx ./cmd/dbx` pass on the reviewed workspace. There is no
-  repository CI configuration yet; it is deferred until the MVP commands land.
+  `go build -o /tmp/dbx ./cmd/dbx` pass on the reviewed workspace.
+  GitHub Actions (`.github/workflows/ci.yml`) runs those Go commands on
+  push/PR to `main`, plus a separate Neovim smoke job.
 
 ## Execution order & status
 
@@ -41,7 +43,7 @@ after completion.
 | [011](011-query-row-limit-with-truncation-metadata.md) | `--max-rows N` for `dbx query` with truncation envelope | P1 | M | 005 | DONE ([PR #14](https://github.com/jd4n14/dbx/pull/14)) |
 | [012](012-schema-inspection-siblings.md) | `dbx indexes` / `dbx fk` / `dbx table-size` + `:Db*` mirrors | P2 | M | 007 | DONE |
 | [013](013-history-rerun-and-picker-ux.md) | `:DbHistoryRun <idx>` + opt-in `history_picker` UX | P2 | M | — | DONE |
-| [014](014-floating-danger-window-and-conn-env-ux.md) | Floating danger window + conn@env statusline UX | P2 | M | 005 | TODO |
+| [014](014-floating-danger-window-and-conn-env-ux.md) | Floating danger window + conn@env statusline UX | P2 | M | 005 | DONE |
 
 ## Direction proposals (post-MVP, plans 010–014)
 
@@ -103,9 +105,10 @@ Ordered roughly by leverage, lowest-risk first:
 - Plans 010 and 013 are independent — they reuse existing primitives
   (mysql.Open + db.DB.PingContext for 010; history + vim.ui.select for
   013) and add no new internal package.
-- Add GitHub Actions only after the post-MVP plans are merged: its initial
-  workflow should run the already-verified `go test ./...`, `go vet ./...`,
-  and build commands. It is intentionally not a separate MVP blocker.
+- GitHub Actions ships with Plan 014: `.github/workflows/ci.yml` runs
+  the already-verified `go test ./...`, `go vet ./...`, and build
+  commands on push/PR to `main`, with a separate Neovim smoke job so a
+  missing nvim never fails the Go jobs.
 
 ## Findings considered and rejected
 

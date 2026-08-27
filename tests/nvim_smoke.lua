@@ -122,6 +122,7 @@ vim.fn.writefile({
   "  indexes) printf '[{\"name\":\"PRIMARY\",\"non_unique\":false,\"seq_in_index\":1,\"column_name\":\"id\",\"collation\":\"A\",\"cardinality\":42,\"index_type\":\"BTREE\"}]\\n' ;;",
   "  fk) printf '[{\"name\":\"fk_a\",\"column\":\"a_id\",\"referenced_schema\":\"wms\",\"referenced_table\":\"a\",\"referenced_column\":\"id\",\"update_rule\":\"RESTRICT\",\"delete_rule\":\"CASCADE\"}]\\n' ;;",
   "  table-size) printf '{\"rows\":42,\"data_bytes\":1024,\"index_bytes\":256,\"data_free_bytes\":0,\"auto_increment\":43,\"collation\":\"utf8mb4_unicode_ci\",\"create_time\":\"2026-07-21T22:00:00Z\",\"update_time\":\"2026-07-21T22:00:00Z\",\"engine\":\"InnoDB\"}\\n' ;;",
+  "  status) printf '{\"type\":\"status\",\"connection\":\"local_wms\",\"driver\":\"mysql\",\"env\":\"dev\",\"server_version\":\"8.0.0\",\"sql_mode\":\"\",\"dbx_version\":\"dbx 0.0.1\"}\\n' ;;",
   "  *) printf '[{\"ok\":true}]\\n' ;;",
   "esac",
 }, fake)
@@ -1234,8 +1235,154 @@ vim.bo.filetype = "sql"
 assert_equal("", vim.bo.omnifunc, "sql_omnifunc=false must not install the omnifunc on new SQL buffers")
 close_extra_windows()
 
+-- Plan 011/014: :DbRun --max-rows, danger_float, statusline.
+-- Default setup must NOT pass --max-rows (byte-compatible with today).
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = neutral,
+  max_rows = 0,
+  danger_float = false,
+  statusline = false,
+})
+vim.cmd("DbConn local_wms")
+close_all_windows()
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+clear_log()
+vim.cmd("DbRun")
+wait_for("query --conn local_wms")
+assert_log_contains("query --conn local_wms", "DbRun should still invoke query --conn local_wms")
+assert(not log_text():find("--max-rows", 1, true), "default setup must not pass --max-rows")
+close_all_windows()
+
+-- After setup({ max_rows = 50 }): DbRun log CONTAINS --max-rows 50.
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = neutral,
+  max_rows = 50,
+})
+vim.cmd("DbConn local_wms")
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+clear_log()
+vim.cmd("DbRun")
+wait_for("--max-rows 50")
+assert_log_contains("query --conn local_wms --max-rows 50", "DbRun must pass --max-rows 50")
+close_all_windows()
+
+-- History rerun with max_rows set also contains --max-rows.
+require("dbx").setup({
+  executable = hist,
+  connection = "local_wms",
+  root = history_project,
+  max_rows = 50,
+})
+clear_log()
+vim.cmd("DbHistoryLast")
+wait_for("--max-rows 50")
+assert_log_contains("query --conn local_wms --max-rows 50", "history rerun must honor max_rows")
+assert_log_contains("stdin=select 1;", "history rerun must still pipe SQL")
+close_all_windows()
+
+-- Reset max_rows so later assertions stay unlimited.
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = neutral,
+  max_rows = 0,
+  danger_float = false,
+})
+
+-- Default :DbDanger still uses the result buffer path.
+close_all_windows()
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;", "select 2;" })
+clear_log()
+vim.cmd("DbDanger")
+wait_for("danger --conn local_wms")
+current_result("json")
+assert(vim.api.nvim_buf_is_valid(result_bufnr("danger")), "default DbDanger must use result buffer")
+close_all_windows()
+
+-- danger_float=true: a floating win exists after DbDanger (relative=editor).
+local function has_editor_float()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local cfg = vim.api.nvim_win_get_config(win)
+    if cfg and cfg.relative == "editor" then
+      return true, win
+    end
+  end
+  return false, nil
+end
+
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = neutral,
+  danger_float = true,
+})
+vim.cmd("DbConn local_wms")
+close_all_windows()
+vim.cmd.enew()
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1;" })
+clear_log()
+vim.cmd("DbDanger")
+wait_for("danger --conn local_wms")
+assert(vim.wait(3000, function()
+  local ok = has_editor_float()
+  return ok
+end, 10), "danger_float=true must open an editor-relative floating window")
+local ok_float, float_win = has_editor_float()
+assert(ok_float, "floating win missing after DbDanger with danger_float=true")
+local float_cfg = vim.api.nvim_win_get_config(float_win)
+assert_equal("editor", float_cfg.relative, "danger float must be relative=editor")
+close_all_windows()
+
+-- Default DbConn notify unchanged (Conexion activa: name).
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = neutral,
+  danger_float = false,
+  statusline = false,
+})
+before_notifications = #notifications
+vim.cmd("DbConn local_wms")
+assert(notifications[#notifications].message:find("Conexi", 1, true), "DbConn notify must keep Spanish prefix")
+assert(notifications[#notifications].message:find("local_wms", 1, true), "default DbConn notify must show conn name")
+
+-- statusline=true + DbConn sets vim.g.dbx_status; M.statusline() has conn name.
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = neutral,
+  statusline = true,
+})
+vim.cmd("DbConn local_wms")
+assert(type(vim.g.dbx_status) == "string" and vim.g.dbx_status ~= "", "statusline=true must set vim.g.dbx_status")
+assert(vim.g.dbx_status:find("local_wms", 1, true), "vim.g.dbx_status must contain conn name, got " .. tostring(vim.g.dbx_status))
+local sl = require("dbx").statusline()
+assert(type(sl) == "string" and sl:find("local_wms", 1, true), "M.statusline() must contain conn name, got " .. tostring(sl))
+-- Env refresh is async; wait for status --json then conn@env if the fake returned env.
+wait_for("status --json")
+assert(vim.wait(3000, function()
+  local s = require("dbx").statusline()
+  return type(s) == "string" and s:find("local_wms", 1, true) ~= nil
+end, 10), "statusline() should keep the conn name after status refresh")
+
 -- Final default setup so any leftover work is in a known state.
-require("dbx").setup({ executable = fake, connection = "local_wms", root = false })
+require("dbx").setup({
+  executable = fake,
+  connection = "local_wms",
+  root = false,
+  max_rows = 0,
+  danger_float = false,
+  statusline = false,
+})
 
 vim.fn.delete(tmp, "rf")
 vim.cmd("qa!")
